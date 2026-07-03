@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>汉诺塔 - Slowpapa</title>
+  <meta name="description" content="经典汉诺塔益智游戏，3-7 个圆盘可选，点击或拖拽移动，记录步数与最少步数，全部移到第三柱即胜。Slowpapa 益智游戏大厅。">
+  <link rel="stylesheet" href="/assets/game.css">
+  <style>
+    /* ---- hanoi board ---- */
+    .game-board { display: flex; flex-direction: column; gap: 12px; }
+
+    #board {
+      width: 100%;
+      aspect-ratio: 3 / 2;
+      border-radius: 12px;
+      touch-action: none;
+      background: linear-gradient(180deg, rgba(255,255,255,.04) 0%, rgba(255,255,255,0) 60%);
+      box-shadow: inset 0 0 0 1px var(--border);
+    }
+
+    .seg-wrap { display: flex; justify-content: center; }
+    .info-row {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 10px; flex-wrap: wrap; font-size: 14px; color: var(--text-dim);
+      font-weight: 600;
+    }
+    .info-row .v { color: var(--text); font-weight: 800; font-variant-numeric: tabular-nums; }
+    .info-row .min { color: var(--accent-3); }
+    .action-row { margin-top: 0; }
+    .hint { margin: 0; }
+  </style>
+</head>
+<body>
+  <div class="game-shell">
+    <div class="game-topbar">
+      <a class="back" href="/" aria-label="返回游戏大厅">‹</a>
+      <div class="title">汉诺塔<small>经典递归 · 移盘成塔</small></div>
+      <div class="stats">
+        <div class="stat" data-stat="best">
+          <span class="k">最少</span><span class="v" id="best-v">—</span>
+        </div>
+      </div>
+      <button class="icon-btn" id="theme-btn" aria-label="切换主题">◑</button>
+      <button class="icon-btn" id="help-btn" aria-label="规则">?</button>
+    </div>
+
+    <div class="game-stage">
+      <div class="game-board">
+        <canvas id="board" aria-label="汉诺塔棋盘"></canvas>
+        <div class="info-row">
+          <span>步数 <span class="v" id="steps-v">0</span></span>
+          <span>最少 <span class="v min" id="min-v">7</span></span>
+          <span>圆盘 <span class="v" id="n-v">3</span></span>
+        </div>
+        <div class="seg-wrap">
+          <div class="segment" id="n-seg" role="group" aria-label="圆盘数量">
+            <button data-n="3" aria-pressed="true">3</button>
+            <button data-n="4" aria-pressed="false">4</button>
+            <button data-n="5" aria-pressed="false">5</button>
+            <button data-n="6" aria-pressed="false">6</button>
+            <button data-n="7" aria-pressed="false">7</button>
+          </div>
+        </div>
+        <div class="action-row">
+          <button class="btn" id="undo-btn">撤销</button>
+          <button class="btn primary" id="reset-btn">重置</button>
+        </div>
+        <p class="hint">点击源柱选中，再点目标柱移动 · 或拖拽圆盘 · 只能小盘放大盘</p>
+      </div>
+    </div>
+  </div>
+
+  <script src="/assets/game.js"></script>
+  <script>
+  "use strict";
+  /* ====== 常量 ====== */
+  const KEY = "hanoi";
+  const N_MIN = 3, N_MAX = 7;
+  const PILLARS = 3;
+
+  /* ====== 状态 ====== */
+  let n = 3;                 // 当前圆盘数
+  let towers = [[], [], []]; // 每柱从底到顶的圆盘大小数组（大在前）
+  let steps = 0;
+  let selected = null;       // 选中的源柱 index
+  let history = [];          // 撤销栈 [{from,to}]
+  let gameOver = false;
+  let drag = null;           // 拖拽态 {from, x, y}
+  let anim = null;           // 移动动画 {from,to,disk,t0,dur}
+  let rafId = null;
+
+  /* ====== DOM ====== */
+  const canvas = document.getElementById("board");
+  const ctx = canvas.getContext("2d");
+  const stepsV = document.getElementById("steps-v");
+  const minV = document.getElementById("min-v");
+  const nV = document.getElementById("n-v");
+  const bestV = document.getElementById("best-v");
+  const undoBtn = document.getElementById("undo-btn");
+
+  /* ====== 尺寸 / DPR ====== */
+  let dpr = 1, cssW = 0, cssH = 0;
+  let pillarW = 0, baseY = 0, topY = 0, diskH = 0, maxDiskW = 0, minDiskW = 0, pillarGap = 0;
+
+  function resize() {
+    const rect = canvas.getBoundingClientRect();
+    cssW = Math.max(1, rect.width);
+    cssH = Math.max(1, rect.height);
+    dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(cssW * dpr);
+    canvas.height = Math.round(cssH * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    layout();
+    draw();
+  }
+
+  function layout() {
+    // 柱子区与底部基座
+    baseY = cssH * 0.86;
+    topY = cssH * 0.14;
+    pillarGap = cssW / PILLARS;
+    pillarW = Math.max(6, cssW * 0.018);
+    diskH = Math.max(12, (baseY - topY) / (N_MAX + 1.5));
+    maxDiskW = Math.min(pillarGap * 0.82, cssW * 0.28);
+    minDiskW = Math.max(28, maxDiskW * 0.34);
+  }
+
+  function pillarCx(i) { return pillarGap * (i + 0.5); }
+  function diskWidth(size) {
+    // size: 1..n, 最大盘最宽
+    if (n <= 1) return maxDiskW;
+    return minDiskW + (maxDiskW - minDiskW) * (size - 1) / (n - 1);
+  }
+  // 圆盘中心 Y（栈底 index 0 在最底）
+  function diskY(pillarIndex, stackIndexFromBottom) {
+    return baseY - diskH * (stackIndexFromBottom + 0.5);
+  }
+
+  function getCss(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || "#000";
+  }
+
+  /* ====== 圆盘配色（按大小渐变 accent→accent-2） ====== */
+  function diskColor(size) {
+    const acc = getCss("--accent");
+    const acc2 = getCss("--accent-2");
+    // 简单插值：size 越大越偏 accent-2
+    const t = (size - 1) / Math.max(1, n - 1);
+    return mix(acc, acc2, t);
+  }
+  function mix(c1, c2, t) {
+    const a = hexToRgb(c1), b = hexToRgb(c2);
+    const r = Math.round(a[0] + (b[0] - a[0]) * t);
+    const g = Math.round(a[1] + (b[1] - a[1]) * t);
+    const bl = Math.round(a[2] + (b[2] - a[2]) * t);
+    return `rgb(${r},${g},${bl})`;
+  }
+  function hexToRgb(h) {
+    h = h.replace("#", "");
+    if (h.length === 3) h = h.split("").map(c => c + c).join("");
+    const n = parseInt(h, 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+
+  /* ====== 绘制 ====== */
+  function draw() {
+    ctx.clearRect(0, 0, cssW, cssH);
+    drawBase();
+    for (let i = 0; i < PILLARS; i++) drawPillar(i);
+    drawDisks();
+    if (anim) drawAnimatedDisk();
+    if (drag) drawDragDisk();
+    drawSelection();
+  }
+
+  function drawBase() {
+    // 底座长条
+    const baseH = Math.max(8, cssH * 0.035);
+    ctx.fillStyle = "rgba(255,255,255,.08)";
+    roundRect(pillarGap * 0.08, baseY, cssW - pillarGap * 0.16, baseH, baseH / 2);
+    ctx.fill();
+    // 基座边
+    ctx.strokeStyle = getCss("--border");
+    ctx.lineWidth = 1;
+    roundRect(pillarGap * 0.08, baseY, cssW - pillarGap * 0.16, baseH, baseH / 2);
+    ctx.stroke();
+  }
+
+  function drawPillar(i) {
+    const cx = pillarCx(i);
+    const top = topY;
+    const h = baseY - top;
+    // 柱身
+    const grad = ctx.createLinearGradient(cx - pillarW, 0, cx + pillarW, 0);
+    grad.addColorStop(0, "rgba(255,255,255,.12)");
+    grad.addColorStop(0.5, "rgba(255,255,255,.20)");
+    grad.addColorStop(1, "rgba(255,255,255,.12)");
+    ctx.fillStyle = grad;
+    roundRect(cx - pillarW / 2, top, pillarW, h, pillarW / 2);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,.10)";
+    ctx.lineWidth = 1;
+    roundRect(cx - pillarW / 2, top, pillarW, h, pillarW / 2);
+    ctx.stroke();
+    // 柱顶小球
+    ctx.fillStyle = "rgba(255,255,255,.22)";
+    ctx.beginPath();
+    ctx.arc(cx, top, pillarW * 0.7, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawSelection() {
+    if (selected === null) return;
+    const cx = pillarCx(selected);
+    // 选中柱底部高亮环
+    ctx.strokeStyle = getCss("--accent-3");
+    ctx.lineWidth = Math.max(2, cssW * 0.006);
+    ctx.setLineDash([6, 5]);
+    ctx.beginPath();
+    ctx.arc(cx, baseY + 8, pillarGap * 0.36, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // 顶部小箭头
+    ctx.fillStyle = getCss("--accent-3");
+    const ay = topY - 6;
+    ctx.beginPath();
+    ctx.moveTo(cx, ay + 8);
+    ctx.lineTo(cx - 7, ay - 2);
+    ctx.lineTo(cx + 7, ay - 2);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function drawDisks() {
+    for (let p = 0; p < PILLARS; p++) {
+      const stack = towers[p];
+      for (let i = 0; i < stack.length; i++) {
+        // 动画中的盘不画在原柱顶部
+        if (anim && anim.from === p && i === stack.length - 1) continue;
+        const size = stack[i];
+        drawDisk(pillarCx(p), diskY(p, i), size, false);
+      }
+    }
+  }
+
+  function drawDisk(x, y, size, lifted) {
+    const w = diskWidth(size);
+    const r = diskH * 0.42;
+    ctx.save();
+    if (lifted) {
+      ctx.shadowColor = "rgba(0,0,0,.4)";
+      ctx.shadowBlur = 12;
+      ctx.shadowOffsetY = 4;
+    } else {
+      ctx.shadowColor = "rgba(0,0,0,.35)";
+      ctx.shadowBlur = 4;
+      ctx.shadowOffsetY = 2;
+    }
+    const col = diskColor(size);
+    // 渐变填充
+    const grad = ctx.createLinearGradient(x - w / 2, y - diskH / 2, x + w / 2, y + diskH / 2);
+    grad.addColorStop(0, lighten(col, 0.18));
+    grad.addColorStop(0.5, col);
+    grad.addColorStop(1, darken(col, 0.18));
+    ctx.fillStyle = grad;
+    roundRect(x - w / 2, y - diskH / 2, w, diskH, r);
+    ctx.fill();
+    ctx.restore();
+    // 高光线
+    ctx.strokeStyle = "rgba(255,255,255,.25)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x - w / 2 + r, y - diskH / 2 + 2);
+    ctx.lineTo(x + w / 2 - r, y - diskH / 2 + 2);
+    ctx.stroke();
+  }
+
+  function drawAnimatedDisk() {
+    const { from, to, disk, t } = anim;
+    const fx = pillarCx(from), tx = pillarCx(to);
+    const x = fx + (tx - fx) * t;
+    // 抬升→平移→下落：y 走抛物线，峰高 = topY - diskH
+    const peakY = topY - diskH * 0.5;
+    // 用三段：0~0.35 抬起，0.35~0.65 平移，0.65~1 下落
+    let y;
+    if (t < 0.35) {
+      const k = t / 0.35;
+      const startY = diskY(from, towers[from].length); // 已不在 stack 中，按原位置算
+      y = startY + (peakY - startY) * easeOut(k);
+    } else if (t < 0.65) {
+      y = peakY;
+    } else {
+      const k = (t - 0.65) / 0.35;
+      const endY = diskY(to, towers[to].length); // 落点
+      y = peakY + (endY - peakY) * easeIn(k);
+    }
+    drawDisk(x, y, disk, true);
+  }
+
+  function drawDragDisk() {
+    drawDisk(drag.x, drag.y, drag.disk, true);
+  }
+
+  function easeOut(t) { return 1 - Math.pow(1 - t, 2); }
+  function easeIn(t) { return t * t; }
+
+  function roundRect(x, y, w, h, r) {
+    r = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  function lighten(rgb, t) { return shift(rgb, t); }
+  function darken(rgb, t) { return shift(rgb, -t); }
+  function shift(rgbStr, t) {
+    const m = rgbStr.match(/\d+/g);
+    if (!m) return rgbStr;
+    const [r, g, b] = m.map(Number);
+    const f = v => Math.max(0, Math.min(255, Math.round(v + 255 * t)));
+    return `rgb(${f(r)},${f(g)},${f(b)})`;
+  }
+
+  /* ====== 游戏逻辑 ====== */
+  function minSteps(disks) { return Math.pow(2, disks) - 1; }
+
+  function newGame(disks) {
+    n = disks;
+    towers = [[], [], []];
+    for (let s = n; s >= 1; s--) towers[0].push(s); // 底最大
+    steps = 0;
+    selected = null;
+    history = [];
+    gameOver = false;
+    anim = null;
+    drag = null;
+    layout();
+    updateUI();
+    draw();
+  }
+
+  function topDisk(p) { return towers[p].length ? towers[p][towers[p].length - 1] : null; }
+
+  function canMove(from, to) {
+    if (from === to) return false;
+    const a = topDisk(from), b = topDisk(to);
+    if (a === null) return false;
+    if (b === null) return true;
+    return a < b; // 编号小=盘小
+  }
+
+  function doMove(from, to, animate) {
+    const disk = towers[from].pop();
+    history.push({ from, to });
+    steps++;
+    if (animate) {
+      anim = { from, to, disk, t: 0, t0: performance.now(), dur: 320 };
+      if (!rafId) rafId = requestAnimationFrame(tick);
+    } else {
+      towers[to].push(disk);
+      draw();
+    }
+    updateUI();
+  }
+
+  function tick(now) {
+    if (!anim) { rafId = null; return; }
+    const dt = (now - anim.t0) / anim.dur;
+    anim.t = Math.min(1, dt);
+    draw();
+    if (anim.t >= 1) {
+      towers[anim.to].push(anim.disk);
+      const movedFrom = anim.from, movedTo = anim.to;
+      anim = null;
+      rafId = null;
+      draw();
+      checkWin();
+      return;
+    }
+    rafId = requestAnimationFrame(tick);
+  }
+
+  function checkWin() {
+    // 全部移到第三柱
+    if (towers[2].length === n) {
+      gameOver = true;
+      navigator.vibrate && navigator.vibrate([20, 40, 20]);
+      const min = minSteps(n);
+      const perfect = steps === min;
+      // 记录最少步数最佳：以"是否达最少"计，或记录最少步数
+      const bestKey = "hanoi-solved-" + n;
+      const prev = parseInt(localStorage.getItem(bestKey) || "0", 10);
+      if (steps < prev || prev === 0) localStorage.setItem(bestKey, String(steps));
+      updateBest();
+      const ov = SG.overlay({
+        title: perfect ? "完美通关！" : "通关！",
+        body: `${n} 个圆盘用 <b>${steps}</b> 步完成<br>最少步数 <b>${min}</b>${perfect ? " · 你达到了理论最优" : ` · 还能省 ${steps - min} 步`}`,
+        buttons: [
+          { text: "再来一局", kind: "primary", onClick: () => { ov.hide(); newGame(n); } },
+          { text: "查看棋盘", kind: "", onClick: () => ov.hide() }
+        ]
+      });
+      setTimeout(() => ov.show(), 200);
+    }
+  }
+
+  function undo() {
+    if (gameOver) return;
+    if (anim || drag) return;
+    if (!history.length) { SG.toast && SG.toast("无步可撤销"); return; }
+    const last = history.pop();
+    // 反向移动
+    const disk = towers[last.to].pop();
+    towers[last.from].push(disk);
+    steps = Math.max(0, steps - 1);
+    selected = null;
+    navigator.vibrate && navigator.vibrate(8);
+    updateUI();
+    draw();
+  }
+
+  function selectOrMove(p) {
+    if (gameOver || anim) return;
+    if (selected === null) {
+      if (topDisk(p) === null) { SG.toast && SG.toast("该柱无盘"); return; }
+      selected = p;
+      navigator.vibrate && navigator.vibrate(8);
+      draw();
+      return;
+    }
+    if (selected === p) {
+      // 取消选择
+      selected = null;
+      draw();
+      return;
+    }
+    // 尝试移动
+    if (!canMove(selected, p)) {
+      SG.toast && SG.toast("非法：只能小盘放大盘上");
+      navigator.vibrate && navigator.vibrate([10, 30, 10]);
+      selected = null;
+      draw();
+      return;
+    }
+    const from = selected;
+    selected = null;
+    doMove(from, p, true);
+  }
+
+  /* ====== 输入：点击 / 拖拽 ====== */
+  function pxToCanvas(e) {
+    const rect = canvas.getBoundingClientRect();
+    const cx = (e.clientX - rect.left) * (cssW / rect.width);
+    const cy = (e.clientY - rect.top) * (cssH / rect.height);
+    return { x: cx, y: cy };
+  }
+  function pillarHit(x) {
+    // 选中离 x 最近的柱子
+    let best = 0, bd = Infinity;
+    for (let i = 0; i < PILLARS; i++) {
+      const d = Math.abs(x - pillarCx(i));
+      if (d < bd) { bd = d; best = i; }
+    }
+    // 容差：不超过半个柱距
+    if (bd > pillarGap / 2) return null;
+    return best;
+  }
+
+  let pressInfo = null; // 记录按下时信息，用于区分点击/拖拽
+
+  function onPointerDown(e) {
+    if (gameOver || anim) return;
+    e.preventDefault();
+    const pt = pxToCanvas(e.touches ? e.touches[0] : e);
+    const p = pillarHit(pt.x);
+    if (p === null) return;
+    pressInfo = {
+      p, startX: pt.x, startY: pt.y,
+      moved: false,
+      // 若该柱有盘，准备拖拽顶部盘
+      disk: topDisk(p),
+      clientX: e.touches ? e.touches[0].clientX : e.clientX,
+      clientY: e.touches ? e.touches[0].clientY : e.clientY
+    };
+  }
+
+  function onPointerMove(e) {
+    if (!pressInfo) return;
+    e.preventDefault();
+    const t = e.touches ? e.touches[0] : e;
+    const pt = pxToCanvas(t);
+    const dx = pt.x - pressInfo.startX;
+    const dy = pt.y - pressInfo.startY;
+    if (!pressInfo.moved && Math.hypot(dx, dy) > 8) {
+      // 开始拖拽
+      pressInfo.moved = true;
+      if (pressInfo.disk !== null) {
+        drag = { from: pressInfo.p, disk: pressInfo.disk, x: pt.x, y: pt.y };
+        selected = null;
+        draw();
+      }
+    }
+    if (drag) {
+      drag.x = pt.x;
+      drag.y = pt.y;
+      draw();
+    }
+  }
+
+  function onPointerUp(e) {
+    if (!pressInfo) return;
+    const t = e.changedTouches ? e.changedTouches[0] : e;
+    const pt = pxToCanvas(t);
+    if (drag) {
+      // 放下：判定目标柱
+      const to = pillarHit(pt.x);
+      if (to !== null && to !== drag.from && canMove(drag.from, to)) {
+        const from = drag.from;
+        drag = null;
+        pressInfo = null;
+        doMove(from, to, true);
+        return;
+      }
+      // 落回原柱或非法
+      drag = null;
+      pressInfo = null;
+      draw();
+      return;
+    }
+    // 未拖拽 → 视为点击该柱
+    if (!pressInfo.moved) {
+      selectOrMove(pressInfo.p);
+    }
+    pressInfo = null;
+  }
+
+  canvas.addEventListener("mousedown", onPointerDown);
+  window.addEventListener("mousemove", onPointerMove);
+  window.addEventListener("mouseup", onPointerUp);
+  canvas.addEventListener("touchstart", onPointerDown, { passive: false });
+  canvas.addEventListener("touchmove", onPointerMove, { passive: false });
+  canvas.addEventListener("touchend", onPointerUp, { passive: false });
+  canvas.addEventListener("touchcancel", () => { drag = null; pressInfo = null; draw(); });
+
+  /* ====== UI ====== */
+  function updateUI() {
+    stepsV.textContent = steps;
+    minV.textContent = minSteps(n);
+    nV.textContent = n;
+    undoBtn.disabled = gameOver || !history.length || !!anim;
+    updateBest();
+  }
+  function updateBest() {
+    // 显示当前 n 的历史最少步数记录
+    const bestKey = "hanoi-solved-" + n;
+    const v = parseInt(localStorage.getItem(bestKey) || "0", 10);
+    bestV.textContent = v ? String(v) : "—";
+  }
+
+  /* ====== 事件 ====== */
+  document.getElementById("reset-btn").addEventListener("click", () => newGame(n));
+  document.getElementById("undo-btn").addEventListener("click", () => undo());
+
+  document.querySelectorAll("#n-seg button").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const disks = parseInt(btn.dataset.n, 10);
+      document.querySelectorAll("#n-seg button").forEach(b => b.setAttribute("aria-pressed", String(b === btn)));
+      newGame(disks);
+    });
+  });
+
+  document.getElementById("theme-btn").addEventListener("click", () => {
+    SG.toggleTheme();
+    draw();
+  });
+  document.getElementById("help-btn").addEventListener("click", () => {
+    const ov = SG.overlay({
+      title: "汉诺塔规则",
+      body: `将所有圆盘从 <b>第一柱</b> 移到 <b>第三柱</b>。<br>` +
+        `• 每次只能移动一个柱顶的圆盘<br>` +
+        `• <b>大圆盘不能放小圆盘上</b><br>` +
+        `• 3 个圆盘最少 <b>7</b> 步，n 个圆盘最少 <b>2ⁿ−1</b> 步<br><br>` +
+        `操作：点击源柱选中（高亮），再点目标柱移动；<br>也可直接拖拽圆盘到目标柱。`,
+      buttons: [{ text: "知道了", kind: "primary", onClick: () => ov.hide() }]
+    });
+    ov.show();
+  });
+
+  // 键盘：1/2/3 选柱，R 重置，U/Z 撤销
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "r" || e.key === "R") newGame(n);
+    else if (e.key === "u" || e.key === "U" || e.key === "z" || e.key === "Z") undo();
+    else if (e.key === "1") selectOrMove(0);
+    else if (e.key === "2") selectOrMove(1);
+    else if (e.key === "3") selectOrMove(2);
+    else if (e.key === "Escape") { selected = null; draw(); }
+  });
+
+  // 主题变化重绘
+  new MutationObserver(() => draw()).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+
+  /* ====== 启动 ====== */
+  function init() {
+    resize();
+    newGame(3);
+  }
+  window.addEventListener("resize", () => resize());
+  window.addEventListener("orientationchange", () => setTimeout(resize, 100));
+  requestAnimationFrame(() => requestAnimationFrame(init));
+  </script>
+</body>
+</html>

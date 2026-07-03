@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="description" content="连连看 — 点击两个相同图案，若可用不超过两个拐折的折线连通则消除。洗牌、提示、计时，全部消除即胜。" />
+<title>连连看 · Slowpapa</title>
+<link rel="stylesheet" href="/assets/game.css" />
+<script src="/assets/game.js"></script>
+<style>
+  /* ---- 本游戏专属样式 ---- */
+  .lg-wrap { display: flex; flex-direction: column; align-items: center; gap: 12px; width: 100%; }
+
+  .lg-toolbar {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px; width: min(94vw, 460px);
+    flex-wrap: wrap;
+  }
+  .lg-toolbar .seg-label { font-size: 12px; color: var(--text-mute); font-weight: 600; margin-right: 2px; }
+
+  .lg-board {
+    position: relative;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 12px;
+    width: min(94vw, 460px);
+  }
+  /* canvas 覆盖在网格区域（板内边距 12px 之内） */
+
+  .lg-grid {
+    position: relative;
+    display: grid;
+    gap: 4px;
+    width: 100%;
+    /* aspect-ratio set inline by JS based on cols/rows */
+  }
+
+  .lg-cell {
+    position: relative;
+    aspect-ratio: 1;
+    border-radius: 10px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    display: grid;
+    place-items: center;
+    font-size: clamp(16px, 4.2vw, 26px);
+    line-height: 1;
+    cursor: pointer;
+    user-select: none;
+    touch-action: manipulation;
+    transition: transform .14s ease, box-shadow .2s ease, background .2s ease, opacity .25s ease, border-color .2s ease;
+    color: var(--text);
+  }
+  .lg-cell:active { transform: scale(.94); }
+  .lg-cell.empty {
+    background: transparent;
+    border-color: transparent;
+    pointer-events: none;
+    opacity: 0;
+  }
+  .lg-cell.sel {
+    background: var(--grad-soft);
+    border-color: var(--accent-2);
+    box-shadow: 0 0 0 2px var(--accent-2), var(--shadow-soft);
+    transform: scale(1.04);
+  }
+  .lg-cell.hint {
+    animation: lg-pulse .55s ease-in-out 3;
+  }
+  .lg-cell.removing {
+    animation: lg-pop .28s ease forwards;
+  }
+  @keyframes lg-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 var(--accent-3); border-color: var(--border); }
+    50% { box-shadow: 0 0 0 3px var(--accent-3); border-color: var(--accent-3); }
+  }
+  @keyframes lg-pop {
+    0% { transform: scale(1); opacity: 1; }
+    50% { transform: scale(1.18); opacity: .9; }
+    100% { transform: scale(.2); opacity: 0; }
+  }
+
+  .lg-canvas {
+    position: absolute;
+    inset: 12px;          /* 与 .lg-board 的 padding 对齐，覆盖网格区 */
+    width: auto;
+    height: auto;
+    pointer-events: none;
+    z-index: 5;
+  }
+
+  .lg-actions { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+  .lg-hint { text-align: center; color: var(--text-mute); font-size: 12px; margin-top: 2px; }
+</style>
+</head>
+<body>
+<div class="game-shell">
+  <div class="game-topbar">
+    <a class="back" href="/" aria-label="返回游戏大厅">‹</a>
+    <div class="title">连连看<small>折线连通消除全部图案</small></div>
+    <div class="stats">
+      <div class="stat" data-stat="score"><span class="k">得分</span><span class="v" id="scoreV">0</span></div>
+      <div class="stat" data-stat="time"><span class="k">用时</span><span class="v" id="timeV">00:00</span></div>
+      <div class="stat" data-stat="left"><span class="k">剩余</span><span class="v" id="leftV">0</span></div>
+    </div>
+    <button class="icon-btn" id="themeBtn" aria-label="切换主题">◐</button>
+    <button class="icon-btn" id="helpBtn" aria-label="规则">?</button>
+  </div>
+
+  <div class="game-stage">
+    <div class="lg-wrap">
+      <div class="lg-toolbar">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span class="seg-label">难度</span>
+          <div class="segment" id="diffSeg" role="group" aria-label="难度选择">
+            <button data-diff="8x6" aria-pressed="true">8×6</button>
+            <button data-diff="10x8" aria-pressed="false">10×8</button>
+          </div>
+        </div>
+        <div class="lg-actions">
+          <button class="btn sm" id="hintBtn">提示</button>
+          <button class="btn sm" id="shuffleBtn">洗牌</button>
+          <button class="btn sm" id="restartBtn">重开</button>
+        </div>
+      </div>
+
+      <div class="lg-board" id="board">
+        <div class="lg-grid" id="grid"></div>
+        <canvas class="lg-canvas" id="cv"></canvas>
+      </div>
+
+      <div class="lg-hint">点选两个相同图案，可用不超过两个拐折的折线连通即可消除。</div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  const KEY = "link";
+
+  /* 图案池：足够覆盖 10×8 = 80 格 = 40 对 */
+  const ICONS = [
+    "🐶","🐱","🐭","🐹","🐰","🦊","🐻","🐼","🐨","🐯",
+    "🦁","🐮","🐷","🐸","🐵","🐔","🐧","🐦","🦆","🦅",
+    "🦉","🦇","🐺","🐴","🦄","🐝","🦋","🐢","🐙","🦀",
+    "🐟","🐠","🐬","🐳","🦈","🐊","🦓","🦒","🐘","🦏",
+    "🌵","🌴","🌸","🌺","🌻","🌹","🍒","🍓","🍔","🍕"
+  ];
+
+  /* ---- DOM ---- */
+  const gridEl = document.getElementById("grid");
+  const cv = document.getElementById("cv");
+  const ctx = cv.getContext("2d");
+  const boardEl = document.getElementById("board");
+  const scoreV = document.getElementById("scoreV");
+  const timeV = document.getElementById("timeV");
+  const leftV = document.getElementById("leftV");
+
+  /* ---- 状态 ---- */
+  let COLS = 8, ROWS = 6;       // 实际棋盘
+  // 扩展网格：外圈一圈空格，便于折线绕外而行
+  // gridE[r][c]，r ∈ [0..ROWS+1]，c ∈ [0..COLS+1]，0=空，>0=图案 id
+  let gridE = [];
+  let cells = [];               // DOM 二维数组 (ROWS×COLS)，对应内部格
+  let remaining = 0;
+  let score = 0;
+  let best = SG.best(KEY);
+  let selected = null;          // {r,c}
+  let hintTimer = null;
+  let busy = false;             // 消除动画中，禁止操作
+  let playing = false;
+  let startTs = 0, elapsed = 0, timerId = null;
+
+  /* ---- 工具 ---- */
+  function shuffleArr(a) {
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  }
+  function fmtTime(s) {
+    const m = Math.floor(s / 60), ss = s % 60;
+    return String(m).padStart(2, "0") + ":" + String(ss).padStart(2, "0");
+  }
+
+  /* ---- 棋盘构建 ---- */
+  function buildLevel() {
+    const total = COLS * ROWS;
+    const pairs = total / 2;
+    // 选取 pairs 个图案（可重复类型，但同对必须同图案）
+    const pool = shuffleArr([...Array(ICONS.length).keys()]);
+    const bag = [];
+    let pi = 0;
+    for (let i = 0; i < pairs; i++) {
+      const icon = pool[pi % pool.length] + 1; // id 从 1 开始
+      pi++;
+      bag.push(icon, icon);
+    }
+    shuffleArr(bag);
+
+    // 扩展网格初始化
+    gridE = [];
+    for (let r = 0; r < ROWS + 2; r++) {
+      gridE.push(new Array(COLS + 2).fill(0));
+    }
+    let k = 0;
+    for (let r = 1; r <= ROWS; r++) {
+      for (let c = 1; c <= COLS; c++) {
+        gridE[r][c] = bag[k++];
+      }
+    }
+
+    remaining = total;
+    renderCells();
+    score = 0;
+    selected = null;
+    busy = false;
+    updateHud();
+    fitCanvas();
+  }
+
+  function renderCells() {
+    gridEl.innerHTML = "";
+    gridEl.style.gridTemplateColumns = `repeat(${COLS}, 1fr)`;
+    gridEl.style.aspectRatio = `${COLS} / ${ROWS}`;
+    cells = [];
+    for (let r = 0; r < ROWS; r++) {
+      const row = [];
+      for (let c = 0; c < COLS; c++) {
+        const d = document.createElement("div");
+        d.className = "lg-cell";
+        d.dataset.r = r;
+        d.dataset.c = c;
+        const id = gridE[r + 1][c + 1];
+        if (id) d.textContent = ICONS[id - 1];
+        d.addEventListener("click", onCellClick);
+        gridEl.appendChild(d);
+        row.push(d);
+      }
+      cells.push(row);
+    }
+  }
+
+  /* ---- 路径查找：最多两个拐折（三段折线） ----
+     坐标在扩展网格中。返回路径点数组 [{r,c},...] 或 null。 */
+  function clearVert(c, r1, r2) {
+    const a = Math.min(r1, r2), b = Math.max(r1, r2);
+    for (let r = a + 1; r < b; r++) if (gridE[r][c] !== 0) return false;
+    return true;
+  }
+  function clearHorz(r, c1, c2) {
+    const a = Math.min(c1, c2), b = Math.max(c1, c2);
+    for (let c = a + 1; c < b; c++) if (gridE[r][c] !== 0) return false;
+    return true;
+  }
+  function findPath(a, b) {
+    const r1 = a.r, c1 = a.c, r2 = b.r, c2 = b.c;
+    if (r1 === r2 && c1 === c2) return null;
+
+    // 直线（0 拐）
+    if (r1 === r2 && clearHorz(r1, c1, c2)) return [{r:r1,c:c1},{r:r2,c:c2}];
+    if (c1 === c2 && clearVert(c1, r1, r2)) return [{r:r1,c:c1},{r:r2,c:c2}];
+
+    // 一个拐角（2 段）
+    // 拐角 (r1,c2)
+    if (gridE[r1][c2] === 0 && clearHorz(r1, c1, c2) && clearVert(c2, r1, r2))
+      return [{r:r1,c:c1},{r:r1,c:c2},{r:r2,c:c2}];
+    // 拐角 (r2,c1)
+    if (gridE[r2][c1] === 0 && clearVert(c1, r1, r2) && clearHorz(r2, c1, c2))
+      return [{r:r1,c:c1},{r:r2,c:c1},{r:r2,c:c2}];
+
+    // 两个拐角（3 段）：水平中段在某行 r
+    for (let r = 0; r <= ROWS + 1; r++) {
+      if (r === r1 || r === r2) continue; // 避免与端点同行退化为单拐（已处理/端点非空）
+      if (gridE[r][c1] === 0 && gridE[r][c2] === 0 &&
+          clearVert(c1, r1, r) && clearHorz(r, c1, c2) && clearVert(c2, r2, r))
+        return [{r:r1,c:c1},{r:r,c:c1},{r:r,c:c2},{r:r2,c:c2}];
+    }
+    // 两个拐角：竖直中段在某列 c
+    for (let c = 0; c <= COLS + 1; c++) {
+      if (c === c1 || c === c2) continue;
+      if (gridE[r1][c] === 0 && gridE[r2][c] === 0 &&
+          clearHorz(r1, c1, c) && clearVert(c, r1, r2) && clearHorz(r2, c, c2))
+        return [{r:r1,c:c1},{r:r1,c:c},{r:r2,c:c},{r:r2,c:c2}];
+    }
+    return null;
+  }
+
+  /* ---- 找一对可消（用于提示 / 无解判定） ---- */
+  function findAnyPair() {
+    const byType = new Map();
+    for (let r = 1; r <= ROWS; r++) {
+      for (let c = 1; c <= COLS; c++) {
+        const id = gridE[r][c];
+        if (!id) continue;
+        if (!byType.has(id)) byType.set(id, []);
+        byType.get(id).push({r, c});
+      }
+    }
+    for (const [, list] of byType) {
+      for (let i = 0; i < list.length; i++) {
+        for (let j = i + 1; j < list.length; j++) {
+          const p = findPath(list[i], list[j]);
+          if (p) return { a: list[i], b: list[j], path: p };
+        }
+      }
+    }
+    return null;
+  }
+
+  /* ---- 点击处理 ---- */
+  function onCellClick(e) {
+    if (busy || !playing) return;
+    const r = +e.currentTarget.dataset.r + 1;
+    const c = +e.currentTarget.dataset.c + 1;
+    if (gridE[r][c] === 0) return;
+
+    if (!selected) {
+      selected = { r, c };
+      e.currentTarget.classList.add("sel");
+      navigator.vibrate?.(8);
+      return;
+    }
+    if (selected.r === r && selected.c === c) {
+      // 取消选择
+      clearSelection();
+      return;
+    }
+    // 第二个选择
+    const a = selected, b = { r, c };
+    if (gridE[a.r][a.c] !== gridE[b.r][b.c]) {
+      // 不同图案：切换选中到新格
+      clearSelection();
+      selected = b;
+      e.currentTarget.classList.add("sel");
+      return;
+    }
+    const path = findPath(a, b);
+    if (path) {
+      eliminate(a, b, path);
+    } else {
+      // 不可连：闪一下取消
+      const oldCell = cells[a.r - 1][a.c - 1];
+      oldCell.classList.remove("sel");
+      oldCell.style.transition = "none";
+      oldCell.style.borderColor = "var(--bad)";
+      e.currentTarget.style.transition = "none";
+      e.currentTarget.style.borderColor = "var(--bad)";
+      navigator.vibrate?.([10, 30, 10]);
+      setTimeout(() => {
+        oldCell.style.borderColor = "";
+        e.currentTarget.style.borderColor = "";
+        oldCell.style.transition = "";
+        e.currentTarget.style.transition = "";
+      }, 220);
+      selected = null;
+    }
+  }
+
+  function clearSelection() {
+    if (selected) {
+      const cell = cells[selected.r - 1][selected.c - 1];
+      if (cell) cell.classList.remove("sel");
+    }
+    selected = null;
+  }
+
+  /* ---- 消除 ---- */
+  function eliminate(a, b, path) {
+    busy = true;
+    // 立即更新模型（使后续路径判定基于空格）
+    gridE[a.r][a.c] = 0;
+    gridE[b.r][b.c] = 0;
+    remaining -= 2;
+    score += 10;
+
+    const ca = cells[a.r - 1][a.c - 1];
+    const cb = cells[b.r - 1][b.c - 1];
+    ca.classList.remove("sel");
+    cb.classList.remove("sel");
+
+    drawPath(path);
+    navigator.vibrate?.(14);
+
+    setTimeout(() => {
+      ca.classList.add("removing");
+      cb.classList.add("removing");
+    }, 240);
+
+    setTimeout(() => {
+      clearCanvas();
+      ca.classList.remove("removing");
+      cb.classList.remove("removing");
+      ca.classList.add("empty");
+      cb.classList.add("empty");
+      ca.textContent = "";
+      cb.textContent = "";
+      busy = false;
+      updateHud();
+
+      if (remaining === 0) { win(); return; }
+      // 无解检测
+      if (!findAnyPair()) autoShuffle();
+    }, 540);
+  }
+
+  /* ---- 连线绘制 ---- */
+  function fitCanvas() {
+    const dpr = window.devicePixelRatio || 1;
+    const w = gridEl.clientWidth, h = gridEl.clientHeight;
+    cv.style.width = w + "px";
+    cv.style.height = h + "px";
+    cv.width = Math.round(w * dpr);
+    cv.height = Math.round(h * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  // 扩展坐标 -> canvas 像素中心（相对 gridEl）
+  function extToPx(r, c) {
+    // 内部格 r,c ∈ [1..ROWS]/[1..COLS]；外圈格 0 与 ROWS+1/COLS+1
+    const innerR = r - 1, innerC = c - 1;
+    // 单元格尺寸（含 gap）
+    const gap = 4;
+    const cellW = (gridEl.clientWidth + gap) / COLS - gap;
+    const cellH = (gridEl.clientHeight + gap) / ROWS - gap;
+    // 外圈格中心：位于网格边缘外半个格 + 半个 gap
+    let px, py;
+    if (r === 0) py = -cellH / 2 - gap / 2;
+    else if (r === ROWS + 1) py = gridEl.clientHeight + cellH / 2 + gap / 2;
+    else py = innerR * (cellH + gap) + cellH / 2;
+
+    if (c === 0) px = -cellW / 2 - gap / 2;
+    else if (c === COLS + 1) px = gridEl.clientWidth + cellW / 2 + gap / 2;
+    else px = innerC * (cellW + gap) + cellW / 2;
+    return { x: px, y: py };
+  }
+
+  function drawPath(path) {
+    const dark = (document.documentElement.getAttribute("data-theme") || "dark") !== "light";
+    const c1 = dark ? "#ec4899" : "#db2777";
+    const c2 = dark ? "#38bdf8" : "#0ea5e9";
+    clearCanvas();
+    const pts = path.map(p => extToPx(p.r, p.c));
+    // 外发光
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.shadowBlur = 12;
+    ctx.shadowColor = c1;
+    ctx.lineWidth = 5;
+    const grad = ctx.createLinearGradient(pts[0].x, pts[0].y, pts[pts.length-1].x, pts[pts.length-1].y);
+    grad.addColorStop(0, c1);
+    grad.addColorStop(1, c2);
+    ctx.strokeStyle = grad;
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.stroke();
+    // 端点圆点
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = c1;
+    ctx.beginPath(); ctx.arc(pts[0].x, pts[0].y, 6, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = c2;
+    ctx.beginPath(); ctx.arc(pts[pts.length-1].x, pts[pts.length-1].y, 6, 0, Math.PI*2); ctx.fill();
+    ctx.restore();
+  }
+  function clearCanvas() { ctx.clearRect(0, 0, cv.width, cv.height); }
+
+  /* ---- 提示 ---- */
+  function doHint() {
+    if (busy || !playing) return;
+    const pair = findAnyPair();
+    if (!pair) { SG.toast?.("无可消除对，正在洗牌"); autoShuffle(); return; }
+    const ca = cells[pair.a.r - 1][pair.a.c - 1];
+    const cb = cells[pair.b.r - 1][pair.b.c - 1];
+    if (!ca || !cb) return;
+    ca.classList.add("hint"); cb.classList.add("hint");
+    clearTimeout(hintTimer);
+    hintTimer = setTimeout(() => {
+      ca.classList.remove("hint"); cb.classList.remove("hint");
+    }, 1700);
+    navigator.vibrate?.(8);
+  }
+
+  /* ---- 洗牌 ---- */
+  function shuffle(announce) {
+    if (busy) return;
+    // 收集剩余图案 id
+    const ids = [];
+    const slots = [];
+    for (let r = 1; r <= ROWS; r++) {
+      for (let c = 1; c <= COLS; c++) {
+        if (gridE[r][c] !== 0) { ids.push(gridE[r][c]); slots.push({r, c}); }
+      }
+    }
+    if (ids.length === 0) return;
+    // 多次尝试，确保洗牌后有解
+    for (let attempt = 0; attempt < 30; attempt++) {
+      shuffleArr(ids);
+      for (let i = 0; i < slots.length; i++) gridE[slots[i].r][slots[i].c] = ids[i];
+      if (findAnyPair()) break;
+    }
+    // 更新 DOM
+    for (let r = 1; r <= ROWS; r++) {
+      for (let c = 1; c <= COLS; c++) {
+        const cell = cells[r - 1][c - 1];
+        const id = gridE[r][c];
+        if (id === 0) { cell.classList.add("empty"); cell.textContent = ""; }
+        else { cell.classList.remove("empty"); cell.textContent = ICONS[id - 1]; }
+      }
+    }
+    clearSelection();
+    if (announce) SG.toast?.("已洗牌");
+    navigator.vibrate?.(10);
+  }
+
+  function autoShuffle() {
+    SG.toast?.("无解，自动洗牌");
+    shuffle(false);
+  }
+
+  /* ---- 计时 ---- */
+  function startTimer() {
+    stopTimer();
+    startTs = Date.now();
+    elapsed = 0;
+    timeV.textContent = "00:00";
+    timerId = setInterval(() => {
+      elapsed = Math.floor((Date.now() - startTs) / 1000);
+      timeV.textContent = fmtTime(elapsed);
+    }, 500);
+  }
+  function stopTimer() { if (timerId) { clearInterval(timerId); timerId = null; } }
+
+  /* ---- HUD ---- */
+  function updateHud() {
+    scoreV.textContent = score;
+    leftV.textContent = remaining;
+  }
+
+  /* ---- 胜利 ---- */
+  function win() {
+    stopTimer();
+    playing = false;
+    navigator.vibrate?.([20, 40, 30, 40, 60]);
+    const timeBonus = Math.max(0, 500 - elapsed * 4);
+    score += timeBonus;
+    updateHud();
+    const isBest = score > best;
+    if (isBest) { best = score; SG.best(KEY, best); }
+    const ov = SG.overlay({
+      title: "全部消除！",
+      body: "用时 " + fmtTime(elapsed) + "，时间奖励 +" + timeBonus + "<br>最高分 " + best + (isBest ? "（新纪录）" : ""),
+      score: score,
+      buttons: [
+        { text: "再来一局", kind: "primary", onClick: () => { ov.hide(); newGame(); } },
+        { text: "关闭", onClick: () => ov.hide() },
+      ],
+    });
+    ov.show();
+  }
+
+  /* ---- 新局 ---- */
+  function newGame() {
+    playing = true;
+    buildLevel();
+    // 确保开局有解（理论上有对子就一定可消，但保险）
+    if (!findAnyPair()) shuffle(false);
+    startTimer();
+  }
+
+  /* ---- 难度切换 ---- */
+  function setDiff(diff) {
+    const [c, r] = diff.split("x").map(Number);
+    COLS = c; ROWS = r;
+    document.querySelectorAll("#diffSeg button").forEach(b => {
+      b.setAttribute("aria-pressed", b.dataset.diff === diff ? "true" : "false");
+    });
+    newGame();
+  }
+
+  /* ---- 事件 ---- */
+  document.getElementById("themeBtn").addEventListener("click", () => SG.toggleTheme());
+  document.getElementById("hintBtn").addEventListener("click", doHint);
+  document.getElementById("shuffleBtn").addEventListener("click", () => shuffle(true));
+  document.getElementById("restartBtn").addEventListener("click", newGame);
+  document.querySelectorAll("#diffSeg button").forEach(b => {
+    b.addEventListener("click", () => setDiff(b.dataset.diff));
+  });
+  document.getElementById("helpBtn").addEventListener("click", () => {
+    const ov = SG.overlay({
+      title: "怎么玩",
+      body: "点选两个相同图案，若可用不超过两个拐折的折线连通（可绕到棋盘外圈），即可消除并显示连线动画。<br>全部消除即获胜，用时越短时间奖励越高。<br>提示：点提示按钮高亮一对可消；洗牌：重排剩余图案；无解时自动洗牌。",
+      buttons: [{ text: "知道了", kind: "primary", onClick: () => ov.hide() }],
+    });
+    ov.show();
+  });
+
+  // 键盘：H 提示，S 洗牌，R 重开
+  document.addEventListener("keydown", e => {
+    if (e.key === "h" || e.key === "H") doHint();
+    else if (e.key === "s" || e.key === "S") shuffle(true);
+    else if (e.key === "r" || e.key === "R") newGame();
+    else if (e.key === "Escape") clearSelection();
+  });
+
+  // 防止双击缩放 / 长按选中
+  document.addEventListener("dblclick", e => e.preventDefault());
+  document.addEventListener("gesturestart", e => e.preventDefault());
+
+  // 尺寸变化重绘 canvas
+  const ro = new ResizeObserver(() => fitCanvas());
+  ro.observe(gridEl);
+  window.addEventListener("resize", fitCanvas);
+  window.addEventListener("resize", () => { /* 主题/方向变化时路径动画已清 */ });
+
+  /* ---- 启动 ---- */
+  // 等待布局完成后初始化（确保 clientWidth 可用）
+  requestAnimationFrame(() => {
+    setDiff("8x6");
+  });
+})();
+</script>
+</body>
+</html>

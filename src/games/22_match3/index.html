@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="description" content="消消乐 Match-3 — 8×8 宝石网格，交换相邻宝石连成 3+ 同色横竖线消除，60 秒限时尽量消除，连锁得高分。" />
+<title>消消乐 · Slowpapa</title>
+<link rel="stylesheet" href="/assets/game.css" />
+<script src="/assets/game.js"></script>
+<style>
+  /* ---- 本游戏专属样式 ---- */
+  .m3-stage { padding: 10px; }
+  .m3-board {
+    width: min(94vw, 460px);
+    padding: 12px;
+  }
+  .m3-canvas {
+    display: block;
+    width: 100%;
+    height: auto;
+    touch-action: none;
+    border-radius: 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+  }
+  .m3-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 12px;
+  }
+  .m3-time {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text-dim);
+  }
+  .m3-bar {
+    flex: 1;
+    height: 8px;
+    border-radius: 999px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    overflow: hidden;
+  }
+  .m3-bar > i {
+    display: block;
+    height: 100%;
+    width: 100%;
+    background: var(--grad);
+    transform-origin: left;
+    transition: transform .25s linear;
+  }
+  .m3-actions { display: flex; gap: 8px; }
+  .m3-hint {
+    text-align: center;
+    color: var(--text-mute);
+    font-size: 12px;
+    margin-top: 10px;
+  }
+  .m3-quiet { opacity: .55; }
+</style>
+</head>
+<body>
+<div class="game-shell">
+  <div class="game-topbar">
+    <a class="back" href="/" aria-label="返回游戏大厅">‹</a>
+    <div class="title">消消乐<small>三连消除 · 60秒挑战</small></div>
+    <div class="stats">
+      <div class="stat" data-stat="score"><span class="k">得分</span><span class="v" id="scoreV">0</span></div>
+      <div class="stat" data-stat="best"><span class="k">最高</span><span class="v" id="bestV" style="color:var(--accent-2)">0</span></div>
+    </div>
+    <button class="icon-btn" id="themeBtn" aria-label="切换主题">◐</button>
+    <button class="icon-btn" id="helpBtn" aria-label="规则">?</button>
+  </div>
+
+  <div class="game-stage m3-stage">
+    <div class="game-board m3-board">
+      <canvas class="m3-canvas" id="cv" width="440" height="440"></canvas>
+      <div class="m3-meta">
+        <div class="m3-time">剩余 <span id="timeV">60</span>s</div>
+        <div class="m3-bar"><i id="timeBar"></i></div>
+        <div class="m3-actions">
+          <button class="btn sm" id="restartBtn">重开</button>
+        </div>
+      </div>
+      <div class="m3-hint">拖拽或点选两个相邻宝石交换 · 连成 3+ 同色消除</div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  const KEY = "match3";
+  const cv = document.getElementById("cv");
+  const ctx = cv.getContext("2d");
+
+  /* ---- 逻辑画布尺寸（CSS 像素，正方形） ---- */
+  const W = 440, H = 440;
+  const N = 8;                 // 8×8 网格
+  const PAD = 8;               // 棋盘内边距
+  const CELL = (W - PAD * 2) / N;
+
+  /* ---- 6 种宝石：颜色 + emoji 标识 ---- */
+  const GEMS = [
+    { c: "#f87171", e: "🔴" }, // 红
+    { c: "#fbbf24", e: "🟡" }, // 黄
+    { c: "#34d399", e: "🟢" }, // 绿
+    { c: "#38bdf8", e: "🔵" }, // 蓝
+    { c: "#a78bfa", e: "🟣" }, // 紫
+    { c: "#fb7185", e: "🟠" }, // 橙
+  ];
+  const NT = GEMS.length;
+
+  /* ---- DPR 清晰 ---- */
+  let dpr = 1;
+  function fitCanvas() {
+    dpr = Math.max(1, window.devicePixelRatio || 1);
+    cv.width = Math.round(W * dpr);
+    cv.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  fitCanvas();
+  window.addEventListener("resize", fitCanvas);
+
+  /* ---- 游戏状态 ----
+     grid[r][c] = gem 对象 { t: type, px, py, sx, sy, scale, alpha, clear, fall }
+     px/py = 当前渲染像素坐标；sx/sy = 起始坐标用于动画；scale/alpha 用于消除动画
+  */
+  let grid = [];
+  let score = 0;
+  let best = SG.best(KEY);
+  let timeLeft = 60;
+  let running = false;
+  let busy = false;            // 动画进行中，禁止操作
+  let selected = null;         // {r,c} 点选第一颗
+  let hoverCell = null;
+  let flashCells = [];         // 消除闪光 {r,c,t} 倒计时
+  let chainLevel = 0;
+
+  const scoreEl = document.getElementById("scoreV");
+  const bestEl = document.getElementById("bestV");
+  const timeEl = document.getElementById("timeV");
+  const timeBar = document.getElementById("timeBar");
+
+  bestEl.textContent = best;
+
+  /* ---- 工具 ---- */
+  function randType() { return Math.floor(Math.random() * NT); }
+  function cellPx(r, c) {
+    return {
+      x: PAD + c * CELL + CELL / 2,
+      y: PAD + r * CELL + CELL / 2,
+    };
+  }
+  function makeGem(t, r, c, fromTop) {
+    const p = cellPx(r, c);
+    return {
+      t: t,
+      px: p.x,
+      py: fromTop ? PAD - CELL : p.y,
+      tx: p.x,
+      ty: p.y,
+      scale: 1,
+      alpha: 1,
+      clear: false,
+      anim: false,
+    };
+  }
+
+  /* 初始化网格，保证开局无三连 */
+  function initGrid() {
+    grid = [];
+    for (let r = 0; r < N; r++) {
+      grid.push([]);
+      for (let c = 0; c < N; c++) {
+        let t;
+        let tries = 0;
+        do {
+          t = randType();
+          tries++;
+        } while (tries < 30 && wouldMatch(r, c, t));
+        grid[r].push(makeGem(t, r, c, false));
+      }
+    }
+    // 若整体无解则洗牌
+    if (!hasAnyMove()) shuffleBoard(false);
+  }
+
+  function wouldMatch(r, c, t) {
+    // 检查在 (r,c) 放 t 是否立即形成 3 连（只看左/上，因为从左上往右下填）
+    let cnt = 1;
+    for (let i = c - 1; i >= 0 && grid[r][i] && grid[r][i].t === t; i--) cnt++;
+    if (cnt >= 3) return true;
+    cnt = 1;
+    for (let i = r - 1; i >= 0 && grid[i][c] && grid[i][c].t === t; i--) cnt++;
+    if (cnt >= 3) return true;
+    return false;
+  }
+
+  /* ---- 匹配检测 ---- */
+  function findMatches() {
+    // 返回 Set of "r,c" 需消除的格子
+    const matched = new Set();
+    // 横向
+    for (let r = 0; r < N; r++) {
+      let run = 1;
+      for (let c = 1; c <= N; c++) {
+        const same = c < N && grid[r][c] && grid[r][c - 1] &&
+                     grid[r][c].t === grid[r][c - 1].t;
+        if (same) {
+          run++;
+        } else {
+          if (run >= 3) {
+            for (let k = c - run; k < c; k++) matched.add(r + "," + k);
+          }
+          run = 1;
+        }
+      }
+    }
+    // 纵向
+    for (let c = 0; c < N; c++) {
+      let run = 1;
+      for (let r = 1; r <= N; r++) {
+        const same = r < N && grid[r][c] && grid[r - 1][c] &&
+                     grid[r][c].t === grid[r - 1][c].t;
+        if (same) {
+          run++;
+        } else {
+          if (run >= 3) {
+            for (let k = r - run; k < r; k++) matched.add(k + "," + c);
+          }
+          run = 1;
+        }
+      }
+    }
+    return matched;
+  }
+
+  /* ---- 是否存在可消除的交换 ---- */
+  function hasAnyMove() {
+    for (let r = 0; r < N; r++) {
+      for (let c = 0; c < N; c++) {
+        // 尝试与右侧交换
+        if (c + 1 < N && trySwapCheck(r, c, r, c + 1)) return true;
+        // 尝试与下方交换
+        if (r + 1 < N && trySwapCheck(r, c, r + 1, c)) return true;
+      }
+    }
+    return false;
+  }
+  function trySwapCheck(r1, c1, r2, c2) {
+    const a = grid[r1][c1], b = grid[r2][c2];
+    if (!a || !b) return false;
+    // 交换类型即可（不影响渲染坐标）
+    grid[r1][c1] = b; grid[r2][c2] = a;
+    const m = findMatches();
+    grid[r1][c1] = a; grid[r2][c2] = b;
+    return m.size > 0;
+  }
+
+  /* ---- 洗牌（保留类型集合，重排位置） ---- */
+  function shuffleBoard(animate) {
+    const types = [];
+    for (let r = 0; r < N; r++)
+      for (let c = 0; c < N; c++) types.push(grid[r][c].t);
+    let safety = 0;
+    do {
+      // Fisher-Yates
+      for (let i = types.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        const t = types[i]; types[i] = types[j]; types[j] = t;
+      }
+      let idx = 0;
+      for (let r = 0; r < N; r++)
+        for (let c = 0; c < N; c++) grid[r][c].t = types[idx++];
+      safety++;
+    } while (safety < 40 && (findMatches().size > 0 || !hasAnyMove()));
+    // 重新设定渲染位置（直接吸附）
+    for (let r = 0; r < N; r++)
+      for (let c = 0; c < N; c++) {
+        const p = cellPx(r, c);
+        grid[r][c].px = p.x; grid[r][c].py = p.y;
+        grid[r][c].tx = p.x; grid[r][c].ty = p.y;
+        grid[r][c].scale = 1; grid[r][c].alpha = 1; grid[r][c].clear = false;
+      }
+    if (animate) SG.toast?.("无解，已自动洗牌");
+  }
+
+  /* ---- 交换流程 ---- */
+  function swapGems(r1, c1, r2, c2, onDone) {
+    const a = grid[r1][c1], b = grid[r2][c2];
+    if (!a || !b) { onDone(false); return; }
+    grid[r1][c1] = b; grid[r2][c2] = a;
+    const pa = cellPx(r1, c1), pb = cellPx(r2, c2);
+    a.tx = pa.x; a.ty = pa.y; a.anim = true;
+    b.tx = pb.x; b.ty = pb.y; b.anim = true;
+    busy = true;
+    animateTo(220, () => {
+      a.anim = false; b.anim = false;
+      onDone(true);
+    });
+  }
+
+  /* ---- 简易时间驱动动画：在 duration ms 内推进所有 anim 的 gem 坐标 ---- */
+  let animUntil = 0;
+  function animateTo(ms, done) {
+    animUntil = performance.now() + ms;
+    pendingDone = done;
+  }
+  let pendingDone = null;
+
+  /* ---- 消除一轮 ---- */
+  function resolveMatches() {
+    const m = findMatches();
+    if (m.size === 0) {
+      chainLevel = 0;
+      // 检查是否还有可消除；没有则洗牌
+      if (!hasAnyMove()) {
+        shuffleBoard(true);
+        // 洗牌后可能直接产生匹配，递归
+        setTimeout(resolveMatches, 250);
+      } else {
+        busy = false;
+      }
+      return;
+    }
+    chainLevel++;
+    const gained = m.size * 10 * chainLevel;
+    score += gained;
+    scoreEl.textContent = score;
+    if (score > best) {
+      best = score;
+      SG.best(KEY, best);
+      bestEl.textContent = best;
+    }
+    if (navigator.vibrate) try { navigator.vibrate(18); } catch (e) {}
+
+    // 标记消除动画
+    m.forEach(key => {
+      const [r, c] = key.split(",").map(Number);
+      const g = grid[r][c];
+      if (g) { g.clear = true; g.anim = true; }
+      flashCells.push({ r, c, t: 1 });
+    });
+
+    // 等待消除动画后塌落
+    animateTo(240, () => {
+      // 删除被消除的宝石
+      m.forEach(key => {
+        const [r, c] = key.split(",").map(Number);
+        grid[r][c] = null;
+      });
+      // 塌落 + 补充
+      dropAndFill();
+      animateTo(260, () => {
+        // 清除闪光
+        flashCells = [];
+        resolveMatches(); // 连锁
+      });
+    });
+  }
+
+  /* ---- 塌落并从顶部补充新宝石 ---- */
+  function dropAndFill() {
+    for (let c = 0; c < N; c++) {
+      // 收集本列存留的宝石（从下往上）
+      const stack = [];
+      for (let r = N - 1; r >= 0; r--) {
+        if (grid[r][c]) stack.push(grid[r][c]);
+      }
+      // 重新放置到列底
+      let write = N - 1;
+      for (const g of stack) {
+        grid[write][c] = g;
+        const p = cellPx(write, c);
+        g.tx = p.x; g.ty = p.y; g.anim = true;
+        g.clear = false; g.alpha = 1; g.scale = 1;
+        write--;
+      }
+      // 顶部空位补充新宝石
+      for (let r = write; r >= 0; r--) {
+        const t = randType();
+        const g = makeGem(t, r, c, true);
+        grid[r][c] = g;
+        g.anim = true;
+      }
+    }
+  }
+
+  /* ---- 输入：拖拽 / 点选 ---- */
+  function evtToCell(e) {
+    const rect = cv.getBoundingClientRect();
+    const sx = (e.clientX - rect.left) / rect.width * W;
+    const sy = (e.clientY - rect.top) / rect.height * H;
+    const c = Math.floor((sx - PAD) / CELL);
+    const r = Math.floor((sy - PAD) / CELL);
+    if (r < 0 || r >= N || c < 0 || c >= N) return null;
+    return { r, c };
+  }
+  function isAdjacent(a, b) {
+    return (Math.abs(a.r - b.r) + Math.abs(a.c - b.c)) === 1;
+  }
+  function attemptSwap(a, b) {
+    if (busy || !running) return;
+    if (!isAdjacent(a, b)) { selected = null; draw(); return; }
+    selected = null;
+    swapGems(a.r, a.c, b.r, b.c, (ok) => {
+      const m = findMatches();
+      if (m.size === 0) {
+        // 不形成消除 → 换回去
+        swapGems(a.r, a.c, b.r, b.c, () => { busy = false; });
+      } else {
+        resolveMatches();
+      }
+    });
+  }
+
+  let pressStart = null;
+  let pressCell = null;
+  cv.addEventListener("pointerdown", (e) => {
+    if (busy || !running) return;
+    e.preventDefault();
+    const cell = evtToCell(e);
+    if (!cell) return;
+    pressStart = { x: e.clientX, y: e.clientY };
+    pressCell = cell;
+  }, { passive: false });
+
+  cv.addEventListener("pointermove", (e) => {
+    if (busy || !running || !pressStart || !pressCell) return;
+    const rect = cv.getBoundingClientRect();
+    const dx = (e.clientX - pressStart.x) / rect.width * W;
+    const dy = (e.clientY - pressStart.y) / rect.height * H;
+    const thresh = CELL * 0.4;
+    if (Math.abs(dx) < thresh && Math.abs(dy) < thresh) return;
+    // 决定方向并交换
+    let target;
+    if (Math.abs(dx) > Math.abs(dy)) {
+      target = { r: pressCell.r, c: pressCell.c + (dx > 0 ? 1 : -1) };
+    } else {
+      target = { r: pressCell.r + (dy > 0 ? 1 : -1), c: pressCell.c };
+    }
+    const from = pressCell;
+    pressStart = null; pressCell = null;
+    if (target.r < 0 || target.r >= N || target.c < 0 || target.c >= N) return;
+    attemptSwap(from, target);
+  }, { passive: true });
+
+  cv.addEventListener("pointerup", (e) => {
+    if (busy || !running) { pressStart = null; pressCell = null; return; }
+    // 若没有拖动远（点击），按点选两个相邻处理
+    if (pressCell) {
+      const cell = pressCell;
+      if (!selected) {
+        selected = cell;
+      } else if (selected.r === cell.r && selected.c === cell.c) {
+        selected = null; // 取消
+      } else {
+        attemptSwap(selected, cell);
+      }
+      draw();
+    }
+    pressStart = null; pressCell = null;
+  }, { passive: true });
+
+  cv.addEventListener("pointercancel", () => { pressStart = null; pressCell = null; });
+
+  /* ---- 渲染 ---- */
+  function drawGem(g) {
+    if (!g) return;
+    const half = CELL / 2 - 3;
+    const s = g.scale;
+    ctx.save();
+    ctx.globalAlpha = g.alpha;
+    ctx.translate(g.px, g.py);
+    ctx.scale(s, s);
+    // 阴影
+    ctx.shadowColor = "rgba(0,0,0,.35)";
+    ctx.shadowBlur = 6;
+    ctx.shadowOffsetY = 2;
+    // 圆角方块
+    const r = half * 0.86;
+    roundRect(ctx, -r, -r, r * 2, r * 2, r * 0.32);
+    const grad = ctx.createLinearGradient(-r, -r, r, r);
+    const base = GEMS[g.t].c;
+    grad.addColorStop(0, base);
+    grad.addColorStop(1, shade(base, -0.25));
+    ctx.fillStyle = grad;
+    ctx.fill();
+    ctx.shadowColor = "transparent";
+    // 高光
+    ctx.globalAlpha = g.alpha * 0.35;
+    ctx.beginPath();
+    ctx.ellipse(-r * 0.32, -r * 0.42, r * 0.5, r * 0.22, -0.5, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(255,255,255,.9)";
+    ctx.fill();
+    ctx.globalAlpha = g.alpha;
+    // emoji 标识
+    ctx.font = Math.round(r * 0.95) + "px system-ui";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(GEMS[g.t].e, 0, r * 0.06);
+    ctx.restore();
+  }
+
+  function roundRect(c, x, y, w, h, r) {
+    c.beginPath();
+    c.moveTo(x + r, y);
+    c.arcTo(x + w, y, x + w, y + h, r);
+    c.arcTo(x + w, y + h, x, y + h, r);
+    c.arcTo(x, y + h, x, y, r);
+    c.arcTo(x, y, x + w, y, r);
+    c.closePath();
+  }
+
+  function shade(hex, amt) {
+    const m = hex.replace("#", "");
+    const num = parseInt(m, 16);
+    let r = (num >> 16) & 255, g = (num >> 8) & 255, b = num & 255;
+    r = Math.max(0, Math.min(255, Math.round(r + r * amt)));
+    g = Math.max(0, Math.min(255, Math.round(g + g * amt)));
+    b = Math.max(0, Math.min(255, Math.round(b + b * amt)));
+    return "rgb(" + r + "," + g + "," + b + ")";
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+    // 棋盘格底色
+    ctx.save();
+    for (let r = 0; r < N; r++) {
+      for (let c = 0; c < N; c++) {
+        const p = cellPx(r, c);
+        ctx.fillStyle = (r + c) % 2 === 0 ? "rgba(255,255,255,.04)" : "rgba(255,255,255,.02)";
+        roundRect(ctx, p.x - CELL / 2 + 2, p.y - CELL / 2 + 2, CELL - 4, CELL - 4, 8);
+        ctx.fill();
+      }
+    }
+    ctx.restore();
+
+    // 选中高亮
+    if (selected) {
+      const p = cellPx(selected.r, selected.c);
+      ctx.save();
+      ctx.strokeStyle = "var(--accent-2)";
+      ctx.lineWidth = 3;
+      ctx.shadowColor = "rgba(236,72,153,.9)";
+      ctx.shadowBlur = 12;
+      roundRect(ctx, p.x - CELL / 2 + 2, p.y - CELL / 2 + 2, CELL - 4, CELL - 4, 8);
+      ctx.strokeStyle = "#ec4899";
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // 宝石
+    for (let r = 0; r < N; r++) {
+      for (let c = 0; c < N; c++) {
+        const g = grid[r][c];
+        if (!g) continue;
+        drawGem(g);
+      }
+    }
+
+    // 闪光
+    for (const f of flashCells) {
+      const p = cellPx(f.r, f.c);
+      ctx.save();
+      ctx.globalAlpha = f.t * 0.6;
+      ctx.fillStyle = "#fff";
+      roundRect(ctx, p.x - CELL / 2, p.y - CELL / 2, CELL, CELL, 8);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  /* ---- 主循环：推进动画与计时 ---- */
+  let lastT = performance.now();
+  function loop(now) {
+    const dt = Math.min(50, now - lastT);
+    lastT = now;
+
+    // 计时
+    if (running) {
+      timeLeft -= dt / 1000;
+      if (timeLeft <= 0) {
+        timeLeft = 0;
+        endGame();
+      }
+      timeEl.textContent = Math.ceil(timeLeft);
+      timeBar.style.transform = "scaleX(" + (timeLeft / 60) + ")";
+    }
+
+    // 推进动画 gem 坐标
+    if (animUntil > 0) {
+      const remain = animUntil - now;
+      if (remain <= 0) {
+        // 吸附到目标
+        for (let r = 0; r < N; r++)
+          for (let c = 0; c < N; c++) {
+            const g = grid[r] && grid[r][c];
+            if (!g) continue;
+            if (g.anim) {
+              g.px = g.tx; g.py = g.ty;
+            }
+            if (g.clear) { g.alpha = 0; g.scale = 0; }
+          }
+        animUntil = 0;
+        if (pendingDone) { const d = pendingDone; pendingDone = null; d(); }
+      } else {
+        const total = 240; // 粗略总量用于插值
+        const k = 1 - remain / Math.max(remain, total);
+        const ease = 1 - Math.pow(1 - k, 3);
+        for (let r = 0; r < N; r++)
+          for (let c = 0; c < N; c++) {
+            const g = grid[r] && grid[r][c];
+            if (!g) continue;
+            if (g.anim) {
+              // 起始位置近似：从上一帧线性逼近目标
+              g.px += (g.tx - g.px) * Math.min(1, ease + 0.1);
+              g.py += (g.ty - g.py) * Math.min(1, ease + 0.1);
+            }
+            if (g.clear) {
+              g.scale = Math.max(0, g.scale - dt / 180);
+              g.alpha = Math.max(0, g.alpha - dt / 180);
+            }
+          }
+      }
+    }
+    // 闪光衰减
+    for (const f of flashCells) f.t = Math.max(0, f.t - dt / 240);
+    flashCells = flashCells.filter(f => f.t > 0);
+
+    draw();
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+
+  /* ---- 开始 / 结束 ---- */
+  function startGame() {
+    score = 0; chainLevel = 0;
+    timeLeft = 60;
+    scoreEl.textContent = 0;
+    timeEl.textContent = 60;
+    timeBar.style.transform = "scaleX(1)";
+    selected = null; flashCells = []; busy = false; animUntil = 0; pendingDone = null;
+    initGrid();
+    running = true;
+    draw();
+  }
+
+  function endGame() {
+    running = false;
+    if (score > best) { best = score; SG.best(KEY, best); bestEl.textContent = best; }
+    const ov = SG.overlay({
+      title: "时间到",
+      body: "本局得分",
+      score: score,
+      buttons: [
+        { text: "再来一局", kind: "primary", onClick: () => { ov.hide(); startGame(); } },
+        { text: "关闭", kind: "", onClick: () => { ov.hide(); } },
+      ],
+    });
+    ov.show();
+  }
+
+  /* ---- UI 事件 ---- */
+  document.getElementById("themeBtn").addEventListener("click", () => SG.toggleTheme());
+  document.getElementById("restartBtn").addEventListener("click", () => {
+    if (running) {
+      const ov = SG.overlay({
+        title: "重开本局？",
+        body: "当前分数会清零。",
+        buttons: [
+          { text: "重开", kind: "primary", onClick: () => { ov.hide(); startGame(); } },
+          { text: "取消", kind: "", onClick: () => { ov.hide(); } },
+        ],
+      });
+      ov.show();
+    } else {
+      startGame();
+    }
+  });
+  document.getElementById("helpBtn").addEventListener("click", () => {
+    const ov = SG.overlay({
+      title: "消消乐 · 规则",
+      body: "8×8 宝石网格，6 种颜色。交换相邻两颗宝石，若形成 3 颗及以上同色横/竖连线即可消除并得分。<br><br>" +
+            "消除后上方宝石下落补充，可能触发连锁，连击得分翻倍。<br><br>" +
+            "无解时棋盘自动洗牌。限时 <b>60 秒</b>，尽量消除拿高分。",
+      buttons: [{ text: "开始", kind: "primary", onClick: () => { ov.hide(); if (!running) startGame(); } }],
+    });
+    ov.show();
+  });
+
+  /* 防止双击缩放 / 页面滚动 */
+  document.addEventListener("touchmove", (e) => {
+    if (e.target === cv) e.preventDefault();
+  }, { passive: false });
+  document.addEventListener("gesturestart", (e) => e.preventDefault());
+
+  /* ---- 启动：先显示规则 ---- */
+  startGame();
+  running = false; // 规则未确认前不计时
+  const intro = SG.overlay({
+    title: "消消乐 · 规则",
+    body: "8×8 宝石网格，6 种颜色。交换相邻两颗宝石，形成 3 颗及以上同色横/竖连线即可消除得分。<br><br>" +
+          "消除后上方宝石下落补充，连击得分翻倍；无解自动洗牌。限时 <b>60 秒</b>，尽量消除！",
+    buttons: [{ text: "开始挑战", kind: "primary", onClick: () => { intro.hide(); running = true; timeLeft = 60; lastT = performance.now(); } }],
+  });
+  intro.show();
+})();
+</script>
+</body>
+</html>

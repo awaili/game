@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="description" content="数织 Nonogram 益智游戏 — 根据行列数字提示填充方格，还原隐藏图案！">
+  <title>数织 · Slowpapa</title>
+  <link rel="stylesheet" href="/assets/game.css">
+  <style>
+    /* ---- 数织局部样式 ---- */
+    .toolbar {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      width: min(94vw, 460px); margin: 0 auto 10px;
+    }
+    .toolbar .spacer { flex: 1; }
+    .toolbar .btn { height: 40px; padding: 0 16px; font-size: 14px; }
+    .toolbar .new-btn { background: var(--grad); border: none; color: #fff; }
+
+    .game-board.nonogram-board {
+      width: min(94vw, 460px);
+      padding: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* 网格：左上角空 + 顶部提示行 + 左侧提示列 + 单元格 */
+    .nono {
+      display: grid;
+      gap: 2px;
+      width: 100%;
+      /* 列：左提示列 + N 个等宽单元格列 */
+      grid-template-columns: 1.4fr repeat(var(--n), 1fr);
+      /* 行：顶提示行 + N 个等宽单元格行 */
+      grid-template-rows: 1.4fr repeat(var(--n), 1fr);
+      user-select: none;
+      -webkit-user-select: none;
+      touch-action: manipulation;
+    }
+
+    .nono .corner { background: transparent; }
+
+    /* 提示单元 */
+    .nono .hint {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 1.05;
+      color: var(--text-dim);
+      font-variant-numeric: tabular-nums;
+      padding: 2px;
+      background: var(--surface);
+      border-radius: 6px;
+    }
+    .nono .hint.col { flex-direction: column; gap: 1px; }
+    .nono .hint.row { flex-direction: row; gap: 4px; justify-content: flex-end; padding-right: 5px; }
+    .nono .hint span { display: block; }
+    .nono .hint.col span { text-align: center; }
+
+    /* 完成时该行/列全部满足，提示高亮 */
+    .nono .hint.satisfied { color: var(--good); }
+
+    /* 单元格 */
+    .cell {
+      aspect-ratio: 1 / 1;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      transition: transform .1s ease, background .15s ease;
+      position: relative;
+    }
+    .cell:active { transform: scale(.92); }
+    .cell.filled {
+      background: var(--grad);
+      border-color: transparent;
+      box-shadow: var(--shadow-soft);
+    }
+    .cell.mark::before {
+      content: "✕";
+      color: var(--text-mute);
+      font-size: 1.1em;
+      font-weight: 900;
+    }
+    .cell.error {
+      background: var(--bad);
+      border-color: var(--bad);
+      animation: shake .35s ease;
+    }
+    .cell.hint-flash { animation: flash .6s ease; }
+
+    /* 5 格粗分隔线（10×10 时每 5 格加粗，便于阅读） */
+    .nono.size-10 .cell[data-c="4"] { border-right: 2px solid var(--accent); }
+    .nono.size-10 .cell[data-r="4"] { border-bottom: 2px solid var(--accent); }
+    .nono.size-10 .hint[data-i="4"].col { border-right: 2px solid var(--accent); }
+    .nono.size-10 .hint[data-i="4"].row { border-bottom: 2px solid var(--accent); }
+
+    /* 模式切换：填充 / 标记 */
+    .mode-row {
+      display: flex; gap: 8px; justify-content: center; margin-top: 12px;
+    }
+
+    .hint-text { margin-top: 10px; }
+
+    @keyframes shake {
+      0%,100% { transform: translateX(0); }
+      20% { transform: translateX(-3px); }
+      40% { transform: translateX(3px); }
+      60% { transform: translateX(-2px); }
+      80% { transform: translateX(2px); }
+    }
+    @keyframes flash {
+      0% { background: var(--accent-3); }
+      100% { background: var(--surface-2); }
+    }
+
+    .game-board.win-glow { box-shadow: 0 0 0 2px var(--good), var(--shadow); }
+
+    /* 10×10 单元格字体更小 */
+    .nono.size-10 .cell.mark::before { font-size: .9em; }
+    .nono.size-10 .hint { font-size: 9px; }
+  </style>
+</head>
+<body>
+  <div class="game-shell">
+    <div class="game-topbar">
+      <a class="back" href="/" aria-label="返回游戏大厅">‹</a>
+      <div class="title">数织<small>按数字提示还原图案</small></div>
+      <div class="stats">
+        <div class="stat" data-stat="time"><span class="k">用时</span><span class="v" id="timeV">00:00</span></div>
+        <div class="stat" data-stat="best"><span class="k">最佳</span><span class="v accent" id="bestV">--:--</span></div>
+      </div>
+      <button class="icon-btn" id="themeBtn" aria-label="切换主题">◐</button>
+      <button class="icon-btn" id="help" aria-label="规则">?</button>
+    </div>
+
+    <div class="game-stage">
+      <div style="display:flex;flex-direction:column;align-items:center;width:100%;">
+        <div class="toolbar">
+          <div class="segment" id="sizeSeg" role="group" aria-label="难度">
+            <button data-size="5" aria-pressed="true">5×5</button>
+            <button data-size="10" aria-pressed="false">10×10</button>
+          </div>
+          <div class="spacer"></div>
+          <button class="btn" id="checkBtn">检查</button>
+          <button class="btn new-btn" id="newBtn">换一题</button>
+        </div>
+
+        <div class="game-board nonogram-board" id="board">
+          <div class="nono" id="nono"></div>
+        </div>
+
+        <div class="mode-row" id="modeRow">
+          <button class="btn sm" id="fillModeBtn" aria-pressed="true">填充</button>
+          <button class="btn sm" id="markModeBtn" aria-pressed="false">标记 ✕</button>
+        </div>
+
+        <p class="hint hint-text">
+          点击格子循环 <b>空→填→✕</b> · 长按或右键标记 · 完成后自动判定
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <script src="/assets/game.js"></script>
+  <script>
+  (function () {
+    "use strict";
+    /* ===================== 数织 Nonogram ===================== */
+    const KEY = "nonogram";
+
+    /* ---- 预设图案库（1=填充，0=空） ----
+       每个尺寸多个图案，"换一题"轮换。 */
+    const PATTERNS_5 = [
+      // ❤ 心
+      [
+        "01010",
+        "11111",
+        "11111",
+        "01110",
+        "00100",
+      ],
+      // ★ 星
+      [
+        "00100",
+        "01110",
+        "11111",
+        "01010",
+        "10001",
+      ],
+      // ☺ 笑脸
+      [
+        "01110",
+        "10101",
+        "10001",
+        "11011",
+        "01110",
+      ],
+      // ▲ 三角
+      [
+        "00100",
+        "01110",
+        "01110",
+        "11111",
+        "11111",
+      ],
+      // 🌲 树
+      [
+        "00100",
+        "01110",
+        "11111",
+        "00100",
+        "00100",
+      ],
+      // 房子
+      [
+        "00100",
+        "01110",
+        "11111",
+        "10101",
+        "11111",
+      ],
+      // 箭头
+      [
+        "00100",
+        "01110",
+        "11111",
+        "00100",
+        "00100",
+      ],
+    ];
+
+    const PATTERNS_10 = [
+      // 🐱 猫脸
+      [
+        "1000000001",
+        "1100000011",
+        "1111111111",
+        "1011111101",
+        "1111111111",
+        "1101111011",
+        "1111111111",
+        "1011111101",
+        "1111111111",
+        "0111111110",
+      ],
+      // 🏠 房子
+      [
+        "0001111000",
+        "0011111100",
+        "0111111110",
+        "1111111111",
+        "1100000011",
+        "1100000011",
+        "1100110011",
+        "1100110011",
+        "1100000011",
+        "1111111111",
+      ],
+      // 🚢 帆船
+      [
+        "0001000000",
+        "0011100000",
+        "0111110000",
+        "0001000000",
+        "0001000000",
+        "0001000000",
+        "0111111110",
+        "1111111111",
+        "1001000011",
+        "1111111111",
+      ],
+      // 🌸 花
+      [
+        "0011110000",
+        "0111111000",
+        "1111111100",
+        "0111111000",
+        "0011110000",
+        "0001100000",
+        "0001100000",
+        "0011110000",
+        "0001100000",
+        "0001100000",
+      ],
+      // 心
+      [
+        "0110000110",
+        "1111001111",
+        "1111111111",
+        "1111111111",
+        "1111111111",
+        "0111111110",
+        "0011111100",
+        "0001111000",
+        "0000110000",
+        "0000110000",
+      ],
+      // 蘑菇
+      [
+        "0011111100",
+        "0111111110",
+        "1101101011",
+        "1111111111",
+        "0111111110",
+        "0011111100",
+        "0001111000",
+        "0001111000",
+        "0011111100",
+        "0011111100",
+      ],
+    ];
+
+    /* ---- 状态 ---- */
+    let N = 5;            // 当前尺寸
+    let solution = [];    // N×N 的 0/1 解
+    let grid = [];        // 玩家网格：0 空 / 1 填 / 2 标记
+    let rowHints = [];    // [[..], ..]
+    let colHints = [];
+    let started = false;
+    let startTime = 0;
+    let elapsed = 0;
+    let timerId = 0;
+    let solved = false;
+    let mode = "fill";    // "fill" | "mark"（仅影响长按/快捷，单击仍循环）
+    let lastTapCell = null;
+    let lastTapTime = 0;
+    let idx5 = 0, idx10 = 0;  // 换一题轮换索引
+
+    const boardEl = document.getElementById("board");
+    const nonoEl = document.getElementById("nono");
+    const timeEl = document.getElementById("timeV");
+    const bestEl = document.getElementById("bestV");
+
+    /* ---- 提示数字计算 ---- */
+    function lineHints(line) {
+      const out = [];
+      let run = 0;
+      for (const v of line) {
+        if (v) run++;
+        else if (run) { out.push(run); run = 0; }
+      }
+      if (run) out.push(run);
+      return out.length ? out : [0];
+    }
+
+    function computeHints(sol) {
+      const n = sol.length;
+      const rh = [], ch = [];
+      for (let r = 0; r < n; r++) rh.push(lineHints(sol[r]));
+      for (let c = 0; c < n; c++) {
+        const col = [];
+        for (let r = 0; r < n; r++) col.push(sol[r][c]);
+        ch.push(lineHints(col));
+      }
+      return [rh, ch];
+    }
+
+    /* ---- 取题 ---- */
+    function pickPattern(size) {
+      if (size === 5) {
+        const p = PATTERNS_5[idx5 % PATTERNS_5.length];
+        idx5++;
+        return p.map(row => row.split("").map(Number));
+      } else {
+        const p = PATTERNS_10[idx10 % PATTERNS_10.length];
+        idx10++;
+        return p.map(row => row.split("").map(Number));
+      }
+    }
+
+    /* ---- 构建 DOM 网格 ---- */
+    function buildGrid() {
+      nonoEl.style.setProperty("--n", N);
+      nonoEl.className = "nono size-" + N;
+      nonoEl.innerHTML = "";
+
+      // 左上角空
+      const corner = document.createElement("div");
+      corner.className = "corner";
+      nonoEl.appendChild(corner);
+
+      // 顶部提示行（N 列）
+      for (let c = 0; c < N; c++) {
+        const h = document.createElement("div");
+        h.className = "hint col";
+        h.dataset.i = c;
+        for (const v of colHints[c]) {
+          const s = document.createElement("span");
+          s.textContent = v;
+          h.appendChild(s);
+        }
+        nonoEl.appendChild(h);
+      }
+
+      // 左侧提示 + 单元格（N 行）
+      for (let r = 0; r < N; r++) {
+        const h = document.createElement("div");
+        h.className = "hint row";
+        h.dataset.i = r;
+        for (const v of rowHints[r]) {
+          const s = document.createElement("span");
+          s.textContent = v;
+          h.appendChild(s);
+        }
+        nonoEl.appendChild(h);
+
+        for (let c = 0; c < N; c++) {
+          const cell = document.createElement("div");
+          cell.className = "cell";
+          cell.dataset.r = r;
+          cell.dataset.c = c;
+          nonoEl.appendChild(cell);
+        }
+      }
+      renderCells();
+    }
+
+    /* ---- 渲染单元格状态 ---- */
+    function renderCells() {
+      const cells = nonoEl.querySelectorAll(".cell");
+      for (const cell of cells) {
+        const r = +cell.dataset.r, c = +cell.dataset.c;
+        const v = grid[r][c];
+        cell.classList.remove("filled", "mark", "error");
+        if (v === 1) cell.classList.add("filled");
+        else if (v === 2) cell.classList.add("mark");
+      }
+      updateHintSatisfaction();
+    }
+
+    /* ---- 校验某行/列当前填充是否与提示一致 ----
+       只看 filled(1)，mark(2) 不算。 */
+    function rowSatisfied(r) {
+      const line = grid[r].map(v => (v === 1 ? 1 : 0));
+      return sameHints(lineHints(line), rowHints[r]);
+    }
+    function colSatisfied(c) {
+      const line = [];
+      for (let r = 0; r < N; r++) line.push(grid[r][c] === 1 ? 1 : 0);
+      return sameHints(lineHints(line), colHints[c]);
+    }
+    function sameHints(a, b) {
+      if (a.length !== b.length) return false;
+      for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+      return true;
+    }
+
+    function updateHintSatisfaction() {
+      const rowHintsEls = nonoEl.querySelectorAll(".hint.row");
+      const colHintsEls = nonoEl.querySelectorAll(".hint.col");
+      rowHintsEls.forEach(el => {
+        const r = +el.dataset.i;
+        el.classList.toggle("satisfied", rowSatisfied(r));
+      });
+      colHintsEls.forEach(el => {
+        const c = +el.dataset.i;
+        el.classList.toggle("satisfied", colSatisfied(c));
+      });
+    }
+
+    /* ---- 交互：点击循环 空→填→✕ ---- */
+    function cycleCell(r, c) {
+      if (solved) return;
+      if (!started) startTimer();
+      const v = grid[r][c];
+      grid[r][c] = (v + 1) % 3;   // 0->1->2->0
+      renderCells();
+      navigator.vibrate?.(8);
+      checkWin();
+    }
+
+    function toggleMark(r, c) {
+      if (solved) return;
+      if (!started) startTimer();
+      grid[r][c] = grid[r][c] === 2 ? 0 : 2;
+      renderCells();
+      navigator.vibrate?.(10);
+    }
+
+    function onPointer(e) {
+      const cell = e.target.closest(".cell");
+      if (!cell) return;
+      const r = +cell.dataset.r, c = +cell.dataset.c;
+      // 双击在 mark 模式下快速标记；这里实现"双击切换为标记"
+      const now = Date.now();
+      if (lastTapCell === cell && now - lastTapTime < 280) {
+        // 双击：在 填 和 标记 间快速切换
+        grid[r][c] = grid[r][c] === 1 ? 2 : (grid[r][c] === 2 ? 0 : 2);
+        renderCells();
+        navigator.vibrate?.(8);
+        checkWin();
+        lastTapCell = null;
+        return;
+      }
+      lastTapCell = cell;
+      lastTapTime = now;
+      cycleCell(r, c);
+    }
+
+    // 长按标记
+    let longPressTimer = 0;
+    let longPressFired = false;
+    function onCellTouchStart(e) {
+      const cell = e.target.closest(".cell");
+      if (!cell) return;
+      longPressFired = false;
+      longPressTimer = setTimeout(() => {
+        longPressFired = true;
+        const r = +cell.dataset.r, c = +cell.dataset.c;
+        toggleMark(r, c);
+      }, 380);
+    }
+    function onCellTouchEnd(e) {
+      clearTimeout(longPressTimer);
+      if (longPressFired) {
+        // 阻止后续 click 触发循环
+        e.preventDefault();
+      }
+    }
+    function onCellContextMenu(e) {
+      const cell = e.target.closest(".cell");
+      if (!cell) return;
+      e.preventDefault();
+      const r = +cell.dataset.r, c = +cell.dataset.c;
+      toggleMark(r, c);
+    }
+
+    nonoEl.addEventListener("click", onPointer);
+    nonoEl.addEventListener("touchstart", onCellTouchStart, { passive: true });
+    nonoEl.addEventListener("touchend", onCellTouchEnd, { passive: false });
+    nonoEl.addEventListener("contextmenu", onCellContextMenu);
+
+    /* ---- 模式按钮：填充/标记（影响单击行为可选；这里保留循环，模式仅作视觉提示+键盘） ---- */
+    const fillBtn = document.getElementById("fillModeBtn");
+    const markBtn = document.getElementById("markModeBtn");
+    function setMode(m) {
+      mode = m;
+      fillBtn.setAttribute("aria-pressed", m === "fill");
+      markBtn.setAttribute("aria-pressed", m === "mark");
+    }
+    fillBtn.addEventListener("click", () => setMode("fill"));
+    markBtn.addEventListener("click", () => setMode("mark"));
+
+    /* ---- 键盘：方向键移动光标 + 空格填充 / X 标记 ---- */
+    let curR = 0, curC = 0;
+    window.addEventListener("keydown", e => {
+      if (solved) return;
+      const key = e.key;
+      if (key === "ArrowLeft")  { curC = (curC - 1 + N) % N; e.preventDefault(); }
+      else if (key === "ArrowRight") { curC = (curC + 1) % N; e.preventDefault(); }
+      else if (key === "ArrowUp")    { curR = (curR - 1 + N) % N; e.preventDefault(); }
+      else if (key === "ArrowDown") { curR = (curR + 1) % N; e.preventDefault(); }
+      else if (key === " " || key === "Enter") {
+        cycleCell(curR, curC); e.preventDefault();
+      } else if (key === "x" || key === "X") {
+        toggleMark(curR, curC); e.preventDefault();
+      } else if (key === "Backspace" || key === "Delete" || key === "0") {
+        grid[curR][curC] = 0; renderCells(); e.preventDefault();
+      } else { return; }
+      highlightCursor();
+    });
+
+    function highlightCursor() {
+      nonoEl.querySelectorAll(".cell.cursor").forEach(c => c.classList.remove("cursor"));
+      const cell = nonoEl.querySelector(`.cell[data-r="${curR}"][data-c="${curC}"]`);
+      if (cell) {
+        cell.classList.add("cursor");
+        cell.style.outline = "2px solid var(--accent-3)";
+        cell.style.outlineOffset = "-2px";
+        // 清除其他 outline
+        nonoEl.querySelectorAll(".cell").forEach(c => {
+          if (c !== cell) c.style.outline = "";
+        });
+      }
+    }
+
+    /* ---- 胜负 ---- */
+    function isSolved() {
+      // 玩家 filled 集合 == 解的 filled 集合（忽略标记）
+      for (let r = 0; r < N; r++) {
+        for (let c = 0; c < N; c++) {
+          const want = solution[r][c];
+          const got = grid[r][c] === 1 ? 1 : 0;
+          if (got !== want) return false;
+        }
+      }
+      return true;
+    }
+
+    function checkWin() {
+      if (isSolved()) {
+        solved = true;
+        stopTimer();
+        boardEl.classList.add("win-glow");
+        const secs = Math.floor(elapsed / 1000);
+        // 时间越小越好，SG.best 存最大值不适用，故用自定义存储
+        const bestKey = "slowpapa-best-" + KEY + "-" + N;
+        const prevBest = parseInt(localStorage.getItem(bestKey) || "999999", 10);
+        if (secs < prevBest) localStorage.setItem(bestKey, String(secs));
+        updateBestDisplay();
+        navigator.vibrate?.([20, 40, 20, 40, 60]);
+        // 闪烁庆祝
+        nonoEl.querySelectorAll(".cell.filled").forEach((c, i) => {
+          setTimeout(() => { c.classList.add("hint-flash"); }, i * 18);
+        });
+        const ov = SG.overlay({
+          title: "完成！",
+          body: `用时 <b>${fmtTime(secs)}</b>，还原了图案。${secs <= prevBest ? "新纪录！" : ""}`,
+          buttons: [
+            { text: "再来一题", kind: "primary", onClick: () => { ov.hide(); newPuzzle(); } },
+            { text: "关闭", kind: "", onClick: () => ov.hide() },
+          ],
+        });
+        ov.show();
+      }
+    }
+
+    /* ---- 检查按钮：标出错误的填充格 ---- */
+    function checkErrors() {
+      if (solved) return;
+      let errs = 0;
+      const cells = nonoEl.querySelectorAll(".cell");
+      cells.forEach(cell => {
+        const r = +cell.dataset.r, c = +cell.dataset.c;
+        cell.classList.remove("error");
+        if (grid[r][c] === 1 && solution[r][c] === 0) {
+          cell.classList.add("error");
+          errs++;
+        }
+      });
+      if (errs === 0) {
+        SG.toast?.("目前没有错误填充");
+      } else {
+        SG.toast?.(`有 ${errs} 格填错，已标红`);
+      }
+      // 1.5s 后清除错误样式
+      setTimeout(() => {
+        nonoEl.querySelectorAll(".cell.error").forEach(c => c.classList.remove("error"));
+      }, 1500);
+    }
+
+    /* ---- 计时 ---- */
+    function startTimer() {
+      started = true;
+      startTime = performance.now() - elapsed;
+      timerId = setInterval(() => {
+        elapsed = performance.now() - startTime;
+        timeEl.textContent = fmtTime(Math.floor(elapsed / 1000));
+      }, 250);
+    }
+    function stopTimer() {
+      if (timerId) { clearInterval(timerId); timerId = 0; }
+    }
+    function fmtTime(s) {
+      const m = Math.floor(s / 60);
+      const ss = s % 60;
+      return String(m).padStart(2, "0") + ":" + String(ss).padStart(2, "0");
+    }
+    function updateBestDisplay() {
+      const bestKey = "slowpapa-best-" + KEY + "-" + N;
+      const b = parseInt(localStorage.getItem(bestKey) || "0", 10);
+      bestEl.textContent = b ? fmtTime(b) : "--:--";
+    }
+
+    /* ---- 新题 ---- */
+    function newPuzzle() {
+      stopTimer();
+      started = false; elapsed = 0; solved = false;
+      timeEl.textContent = "00:00";
+      boardEl.classList.remove("win-glow");
+      solution = pickPattern(N);
+      [rowHints, colHints] = computeHints(solution);
+      grid = Array.from({ length: N }, () => Array(N).fill(0));
+      buildGrid();
+      updateBestDisplay();
+    }
+
+    /* ---- 难度切换 ---- */
+    const sizeSeg = document.getElementById("sizeSeg");
+    sizeSeg.addEventListener("click", e => {
+      const b = e.target.closest("button");
+      if (!b) return;
+      const size = +b.dataset.size;
+      if (size === N) return;
+      N = size;
+      sizeSeg.querySelectorAll("button").forEach(btn => {
+        btn.setAttribute("aria-pressed", +btn.dataset.size === size);
+      });
+      newPuzzle();
+    });
+
+    /* ---- 规则 ---- */
+    function showRules() {
+      const ov = SG.overlay({
+        title: "怎么玩数织",
+        body:
+          "数字表示该行/列中<b>连续</b>填充的格子数，多个数字之间至少有一个空格隔开。" +
+          "点击格子循环切换 <b>空 → 填充 → ✕标记</b>（标记仅作辅助，不计入判定）。" +
+          "长按或右键可单独标记 ✕。把所有应填的格子正确填满即完成。" +
+          "顶部 <b>5×5 / 10×10</b> 切换难度，<b>检查</b> 会把填错的格标红。",
+        buttons: [{ text: "开始", kind: "primary", onClick: () => ov.hide() }],
+      });
+      ov.show();
+    }
+
+    /* ---- 事件绑定 ---- */
+    document.getElementById("newBtn").addEventListener("click", newPuzzle);
+    document.getElementById("checkBtn").addEventListener("click", checkErrors);
+    document.getElementById("help").addEventListener("click", showRules);
+    document.getElementById("themeBtn").addEventListener("click", () => {
+      SG.toggleTheme();
+    });
+
+    // 防止双击缩放 / 页面滚动
+    document.addEventListener("touchmove", e => {
+      if (e.target.closest(".nono")) e.preventDefault();
+    }, { passive: false });
+    let lastTap = 0;
+    document.addEventListener("touchend", e => {
+      const now = Date.now();
+      if (now - lastTap < 300) e.preventDefault();
+      lastTap = now;
+    }, { passive: false });
+
+    // 初始化
+    newPuzzle();
+  })();
+  </script>
+</body>
+</html>

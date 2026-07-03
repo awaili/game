@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>井字棋 - Slowpapa</title>
+  <meta name="description" content="在线井字棋 Tic-Tac-Toe 人机对弈，3×3 棋盘，简单/困难两档 AI（困难为不可战胜的 minimax），可选先后手、计分、连线高亮。Slowpapa 益智游戏大厅。">
+  <link rel="stylesheet" href="/assets/game.css">
+  <style>
+    /* ---- tictactoe board (inline, theme-aware) ---- */
+    .game-board { display: flex; flex-direction: column; gap: 14px; }
+
+    .ttt-board {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      grid-template-rows: repeat(3, 1fr);
+      gap: 8px;
+      padding: 8px;
+      border-radius: var(--radius-sm);
+      background: var(--grad-soft);
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow-soft);
+    }
+
+    .cell {
+      position: relative;
+      display: grid;
+      place-items: center;
+      border-radius: 12px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      cursor: pointer;
+      font-size: clamp(40px, 14vw, 80px);
+      font-weight: 900;
+      line-height: 1;
+      user-select: none;
+      touch-action: manipulation;
+      transition: transform .12s ease, background .2s ease, box-shadow .2s ease;
+      overflow: hidden;
+    }
+    .cell:active { transform: scale(.95); }
+    .cell:hover:not(.filled):not(.disabled) {
+      background: var(--surface);
+      box-shadow: inset 0 0 0 2px var(--accent);
+    }
+    .cell.disabled { cursor: default; }
+    .cell.filled { cursor: default; }
+
+    /* X / O marks */
+    .mark { display: inline-block; animation: pop .22s cubic-bezier(.34,1.56,.64,1) both; }
+    .mark.x { color: var(--accent-2); }
+    .mark.o { color: var(--accent-3); }
+    @keyframes pop {
+      0%   { transform: scale(.2) rotate(-12deg); opacity: 0; }
+      60%  { transform: scale(1.15) rotate(4deg); opacity: 1; }
+      100% { transform: scale(1) rotate(0); opacity: 1; }
+    }
+
+    /* winning highlight */
+    .cell.win {
+      background: var(--grad-soft);
+      box-shadow: inset 0 0 0 3px var(--accent-2), 0 0 18px -4px var(--accent-2);
+      animation: winPulse 1s ease-in-out infinite;
+    }
+    @keyframes winPulse {
+      0%, 100% { box-shadow: inset 0 0 0 3px var(--accent-2), 0 0 14px -4px var(--accent-2); }
+      50%      { box-shadow: inset 0 0 0 3px var(--accent-2), 0 0 26px 0 var(--accent-2); }
+    }
+    /* winning line drawn over the grid */
+    .win-line {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      z-index: 3;
+    }
+    .win-line line {
+      stroke: var(--accent-2);
+      stroke-width: 8;
+      stroke-linecap: round;
+      stroke-dasharray: 1000;
+      stroke-dashoffset: 1000;
+      animation: drawLine .35s ease-out forwards;
+      filter: drop-shadow(0 0 6px var(--accent-2));
+    }
+    @keyframes drawLine { to { stroke-dashoffset: 0; } }
+
+    .panel { display: flex; flex-direction: column; gap: 12px; }
+
+    .turn-row {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      font-size: 14px; color: var(--text-dim); font-weight: 600;
+    }
+    .turn-row .you-mark, .turn-row .ai-mark {
+      width: 22px; height: 22px; border-radius: 6px;
+      display: grid; place-items: center;
+      font-size: 15px; font-weight: 900;
+      border: 1px solid var(--border);
+    }
+    .you-mark.x, .ai-mark.x { color: var(--accent-2); }
+    .you-mark.o, .ai-mark.o { color: var(--accent-3); }
+    .turn-row #turn-text { color: var(--text); font-weight: 800; }
+    .think {
+      margin-left: auto;
+      font-size: 12px; font-weight: 700; color: var(--accent-3);
+      display: inline-flex; align-items: center; gap: 6px;
+    }
+    .think[hidden] { display: none !important; }
+    .think::after {
+      content: ""; width: 6px; height: 6px; border-radius: 50%;
+      background: var(--accent-3); animation: blink 1s ease-in-out infinite;
+    }
+    @keyframes blink { 0%,100% { opacity: .3; } 50% { opacity: 1; } }
+
+    .seg-wrap { display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; }
+    .action-row { margin-top: 0; }
+    .hint { margin: 0; }
+  </style>
+</head>
+<body>
+  <div class="game-shell">
+    <div class="game-topbar">
+      <a class="back" href="/" aria-label="返回游戏大厅">‹</a>
+      <div class="title">井字棋<small>Tic-Tac-Toe · 人机对弈</small></div>
+      <div class="stats">
+        <div class="stat" data-stat="win">
+          <span class="k">胜</span><span class="v" id="s-win" style="color:var(--good)">0</span>
+        </div>
+        <div class="stat" data-stat="draw">
+          <span class="k">平</span><span class="v" id="s-draw" style="color:var(--warn)">0</span>
+        </div>
+        <div class="stat" data-stat="lose">
+          <span class="k">负</span><span class="v" id="s-lose" style="color:var(--bad)">0</span>
+        </div>
+      </div>
+      <button class="icon-btn" id="theme-btn" aria-label="切换主题">◑</button>
+      <button class="icon-btn" id="help-btn" aria-label="规则">?</button>
+    </div>
+
+    <div class="game-stage">
+      <div class="game-board">
+        <div class="ttt-board" id="board" aria-label="井字棋棋盘"></div>
+        <div class="panel">
+          <div class="turn-row">
+            <span class="you-mark" id="you-mark">X</span>
+            <span>你</span>
+            <span style="opacity:.5">vs</span>
+            <span class="ai-mark" id="ai-mark">O</span>
+            <span>AI</span>
+            <span id="turn-text">你先手</span>
+            <span class="think" id="think" hidden>AI 思考中</span>
+          </div>
+          <div class="seg-wrap">
+            <div class="segment" id="diff-seg" role="group" aria-label="难度选择">
+              <button data-diff="easy" aria-pressed="true">简单</button>
+              <button data-diff="hard" aria-pressed="false">困难</button>
+            </div>
+            <div class="segment" id="first-seg" role="group" aria-label="先后手选择">
+              <button data-first="player" aria-pressed="true">先手 X</button>
+              <button data-first="ai" aria-pressed="false">后手 O</button>
+            </div>
+          </div>
+          <div class="action-row">
+            <button class="btn primary" id="restart-btn">重开</button>
+            <button class="btn" id="reset-score-btn">清零比分</button>
+          </div>
+          <p class="hint">点击空格落子 · 三连成线获胜 · 困难模式 AI 不可战胜</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/assets/game.js"></script>
+  <script>
+  "use strict";
+  /* ====== 常量 ====== */
+  const EMPTY = 0, X = 1, O = 2;     // X 先手
+  const KEY = "tictactoe";
+  // 8 条获胜线的三格索引 [a,b,c]
+  const LINES = [
+    [0,1,2],[3,4,5],[6,7,8],   // 行
+    [0,3,6],[1,4,7],[2,5,8],   // 列
+    [0,4,8],[2,4,6],           // 对角
+  ];
+
+  /* ====== 状态 ====== */
+  let board = Array(9).fill(EMPTY);
+  let playerRole = X;     // 玩家执子
+  let aiRole = O;
+  let difficulty = "easy";
+  let turn = X;           // 当前该谁下 (X 先)
+  let gameOver = false;
+  let aiThinking = false;
+  let winInfo = null;     // {role, cells:[i,j,k]}
+  // 比分（持久化在 localStorage）
+  let score = loadScore();
+
+  /* ====== DOM ====== */
+  const boardEl = document.getElementById("board");
+  const turnText = document.getElementById("turn-text");
+  const thinkEl = document.getElementById("think");
+  const youMark = document.getElementById("you-mark");
+  const aiMark = document.getElementById("ai-mark");
+  const sWin = document.getElementById("s-win");
+  const sDraw = document.getElementById("s-draw");
+  const sLose = document.getElementById("s-lose");
+  const diffSeg = document.getElementById("diff-seg");
+  const firstSeg = document.getElementById("first-seg");
+
+  /* ====== 构建棋盘 DOM ====== */
+  const cells = [];
+  for (let i = 0; i < 9; i++) {
+    const d = document.createElement("div");
+    d.className = "cell";
+    d.dataset.i = i;
+    d.setAttribute("role", "button");
+    d.setAttribute("aria-label", "格子 " + (i + 1));
+    d.addEventListener("click", () => onPlayerMove(i));
+    boardEl.appendChild(d);
+    cells.push(d);
+  }
+  const winLineSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  winLineSvg.setAttribute("class", "win-line");
+  winLineSvg.setAttribute("viewBox", "0 0 100 100");
+  winLineSvg.setAttribute("preserveAspectRatio", "none");
+  winLineSvg.style.display = "none";
+  boardEl.appendChild(winLineSvg);
+
+  /* ====== 渲染 ====== */
+  function render() {
+    for (let i = 0; i < 9; i++) {
+      const c = cells[i];
+      c.classList.remove("win", "disabled");
+      if (board[i] === EMPTY) {
+        c.textContent = "";
+        c.classList.remove("filled");
+      } else {
+        c.classList.add("filled");
+        const m = document.createElement("span");
+        m.className = "mark " + (board[i] === X ? "x" : "o");
+        m.textContent = board[i] === X ? "X" : "O";
+        c.textContent = "";
+        c.appendChild(m);
+      }
+      if (gameOver || board[i] !== EMPTY) c.classList.add("disabled");
+    }
+    if (winInfo) {
+      winInfo.cells.forEach(i => cells[i].classList.add("win"));
+      drawWinLine(winInfo.cells);
+    } else {
+      winLineSvg.style.display = "none";
+      winLineSvg.innerHTML = "";
+    }
+    updateTurnUI();
+  }
+
+  // 在 100×100 viewBox 里画一条贯穿三格中心的连线
+  function drawWinLine(cellsIdx) {
+    const pts = cellsIdx.map(i => {
+      const r = Math.floor(i / 3), c = i % 3;
+      // 每格中心 (grid gap 8px 约占很小比例，直接按等分估算)
+      return { x: (c + 0.5) * (100 / 3), y: (r + 0.5) * (100 / 3) };
+    });
+    const a = pts[0], b = pts[2];
+    // 稍微向两端延长，更美观
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const ext = 0.18;
+    const x1 = a.x - dx * ext, y1 = a.y - dy * ext;
+    const x2 = b.x + dx * ext, y2 = b.y + dy * ext;
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    line.setAttribute("x1", x1); line.setAttribute("y1", y1);
+    line.setAttribute("x2", x2); line.setAttribute("y2", y2);
+    winLineSvg.innerHTML = "";
+    winLineSvg.appendChild(line);
+    winLineSvg.style.display = "block";
+    // 重置动画
+    winLineSvg.appendChild(document.createElement("defs"));
+  }
+
+  function updateTurnUI() {
+    youMark.textContent = playerRole === X ? "X" : "O";
+    youMark.className = "you-mark " + (playerRole === X ? "x" : "o");
+    aiMark.textContent = aiRole === X ? "X" : "O";
+    aiMark.className = "ai-mark " + (aiRole === X ? "x" : "o");
+
+    if (gameOver) {
+      turnText.textContent = winInfo ? (winInfo.role === playerRole ? "你赢了！" : "AI 获胜") : "平局";
+      thinkEl.hidden = true;
+    } else if (aiThinking) {
+      turnText.textContent = "AI 行棋中";
+    } else {
+      turnText.textContent = turn === playerRole ? "轮到你" : "AI 思考中";
+    }
+    sWin.textContent = score.win;
+    sDraw.textContent = score.draw;
+    sLose.textContent = score.lose;
+  }
+
+  /* ====== 游戏流程 ====== */
+  function newGame() {
+    board = Array(9).fill(EMPTY);
+    gameOver = false;
+    aiThinking = false;
+    winInfo = null;
+    turn = X; // X 永远先手
+    thinkEl.hidden = true;
+    render();
+    // 若玩家是 O（后手），AI(X) 先走
+    if (playerRole === O) scheduleAi();
+  }
+
+  function onPlayerMove(i) {
+    if (gameOver || aiThinking) return;
+    if (turn !== playerRole) return;
+    if (board[i] !== EMPTY) return;
+    place(i, playerRole);
+  }
+
+  function place(i, role) {
+    board[i] = role;
+    const win = checkWin(board, role);
+    if (win) {
+      gameOver = true;
+      winInfo = { role, cells: win };
+      render();
+      onGameOver(role);
+      return;
+    }
+    if (board.every(v => v !== EMPTY)) {
+      gameOver = true;
+      winInfo = null;
+      render();
+      onGameOver(0); // 平局
+      return;
+    }
+    turn = role === X ? O : X;
+    render();
+    if (!gameOver && turn === aiRole) scheduleAi();
+  }
+
+  function scheduleAi() {
+    aiThinking = true;
+    thinkEl.hidden = false;
+    updateTurnUI();
+    setTimeout(() => {
+      try {
+        const i = aiChoose();
+        if (i >= 0) place(i, aiRole);
+      } finally {
+        aiThinking = false;
+        thinkEl.hidden = true;
+      }
+    }, 380); // 短延迟营造思考感
+  }
+
+  function checkWin(b, role) {
+    for (const line of LINES) {
+      if (line.every(i => b[i] === role)) return line;
+    }
+    return null;
+  }
+
+  /* ====== AI ====== */
+  function aiChoose() {
+    const empty = [];
+    for (let i = 0; i < 9; i++) if (board[i] === EMPTY) empty.push(i);
+    if (empty.length === 0) return -1;
+
+    if (difficulty === "hard") {
+      return bestMove(board, aiRole);
+    }
+    // easy：随机 + 一点启发
+    // 1) 能赢就赢
+    for (const i of empty) { board[i] = aiRole; const w = checkWin(board, aiRole); board[i] = EMPTY; if (w) return i; }
+    // 2) 能堵就堵
+    for (const i of empty) { board[i] = playerRole; const w = checkWin(board, playerRole); board[i] = EMPTY; if (w) return i; }
+    // 3) 70% 抢中心
+    if (board[4] === EMPTY && Math.random() < 0.7) return 4;
+    // 4) 50% 抢角
+    const corners = [0,2,6,8].filter(i => board[i] === EMPTY);
+    if (corners.length && Math.random() < 0.5) return corners[Math.floor(Math.random() * corners.length)];
+    // 5) 随机
+    return empty[Math.floor(Math.random() * empty.length)];
+  }
+
+  // 完整 minimax，AI 永不输（先手必胜/后手必平）
+  function bestMove(b, role) {
+    let bestScore = -Infinity, best = -1;
+    for (let i = 0; i < 9; i++) {
+      if (b[i] !== EMPTY) continue;
+      b[i] = role;
+      const s = minimax(b, role === X ? O : X, role, 0);
+      b[i] = EMPTY;
+      if (s > bestScore) { bestScore = s; best = i; }
+    }
+    return best;
+  }
+
+  // minimax：返回对 role 的得分（胜=10-depth，负=-10+depth，平 0）
+  function minimax(b, curTurn, role, depth) {
+    const opp = role === X ? O : X;
+    // 先判终局
+    if (checkWin(b, role)) return 10 - depth;
+    if (checkWin(b, opp)) return depth - 10;
+    if (b.every(v => v !== EMPTY)) return 0;
+
+    const next = curTurn === X ? O : X;
+    if (curTurn === role) {
+      let best = -Infinity;
+      for (let i = 0; i < 9; i++) {
+        if (b[i] !== EMPTY) continue;
+        b[i] = curTurn;
+        best = Math.max(best, minimax(b, next, role, depth + 1));
+        b[i] = EMPTY;
+      }
+      return best;
+    } else {
+      let best = Infinity;
+      for (let i = 0; i < 9; i++) {
+        if (b[i] !== EMPTY) continue;
+        b[i] = curTurn;
+        best = Math.min(best, minimax(b, next, role, depth + 1));
+        b[i] = EMPTY;
+      }
+      return best;
+    }
+  }
+
+  /* ====== 结束处理 ====== */
+  function onGameOver(winnerRole) {
+    if (winnerRole === playerRole) score.win++;
+    else if (winnerRole === 0) score.draw++;
+    else score.lose++;
+    saveScore();
+    updateTurnUI();
+    navigator.vibrate?.(winnerRole === playerRole ? [30, 40, 30] : winnerRole === 0 ? [20] : [60]);
+
+    const title = winnerRole === playerRole ? "你赢了 🎉"
+                : winnerRole === 0 ? "平局 🤝"
+                : "AI 获胜";
+    const body = winnerRole === playerRole
+      ? "漂亮！三连成线。再来一局？"
+      : winnerRole === 0
+        ? "棋逢对手，谁也没能三连。"
+        : (difficulty === "hard" ? "困难模式 AI 不可战胜，试试简单模式或先手。" : "再战一局，扳回比分！");
+    const ov = SG.overlay({
+      title,
+      body,
+      buttons: [
+        { text: "再来一局", kind: "primary", onClick: () => { ov.hide(); newGame(); } },
+        { text: "查看棋盘", kind: "", onClick: () => ov.hide() },
+      ],
+    });
+    ov.show();
+  }
+
+  /* ====== 比分持久化 ====== */
+  function loadScore() {
+    try {
+      const raw = localStorage.getItem("slowpapa-score-" + KEY);
+      if (raw) return JSON.parse(raw);
+    } catch (e) {}
+    return { win: 0, draw: 0, lose: 0 };
+  }
+  function saveScore() {
+    try { localStorage.setItem("slowpapa-score-" + KEY, JSON.stringify(score)); } catch (e) {}
+  }
+
+  /* ====== 控件 ====== */
+  diffSeg.addEventListener("click", e => {
+    const b = e.target.closest("button[data-diff]");
+    if (!b) return;
+    difficulty = b.dataset.diff;
+    [...diffSeg.children].forEach(x => x.setAttribute("aria-pressed", x === b ? "true" : "false"));
+    newGame();
+  });
+  firstSeg.addEventListener("click", e => {
+    const b = e.target.closest("button[data-first]");
+    if (!b) return;
+    const playerFirst = b.dataset.first === "player";
+    playerRole = playerFirst ? X : O;
+    aiRole = playerFirst ? O : X;
+    [...firstSeg.children].forEach(x => x.setAttribute("aria-pressed", x === b ? "true" : "false"));
+    newGame();
+  });
+  document.getElementById("restart-btn").addEventListener("click", newGame);
+  document.getElementById("reset-score-btn").addEventListener("click", () => {
+    score = { win: 0, draw: 0, lose: 0 };
+    saveScore();
+    updateTurnUI();
+    SG.toast("比分已清零");
+  });
+  document.getElementById("theme-btn").addEventListener("click", () => SG.toggleTheme());
+  document.getElementById("help-btn").addEventListener("click", () => {
+    const ov = SG.overlay({
+      title: "井字棋 规则",
+      body: "3×3 棋盘，<b>X 先手、O 后手</b>。双方轮流落子，" +
+            "率先在横、竖或对角线上<b>连成三子</b>者获胜；九格填满未分胜负即平局。<br><br>" +
+            "<b>简单</b>：AI 会赢/堵，偶尔随机，可被击败。<br>" +
+            "<b>困难</b>：完整 minimax，<b>不可战胜</b>（最多平局）。<br><br>" +
+            "可切换先后手。胜负平自动计分。",
+      buttons: [{ text: "开始游戏", kind: "primary", onClick: () => ov.hide() }],
+    });
+    ov.show();
+  });
+
+  // 防双击缩放 / 滚动
+  document.addEventListener("gesturestart", e => e.preventDefault());
+  document.addEventListener("dblclick", e => e.preventDefault(), { passive: false });
+
+  // 主题变化时重绘（winLine 颜色取自变量，自动更新；cell 也用变量，无需手动重绘）
+  window.addEventListener("resize", () => render());
+
+  /* ====== 启动 ====== */
+  newGame();
+  </script>
+</body>
+</html>

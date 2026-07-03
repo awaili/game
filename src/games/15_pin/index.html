@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="description" content="见缝插针 — 旋转的圆盘上已有若干针，点击/空格发射针插入空位，碰到已有针即结束，关卡递增。" />
+<title>见缝插针 · Slowpapa</title>
+<link rel="stylesheet" href="/assets/game.css" />
+<style>
+  /* ---- 本游戏专属样式 ---- */
+  .pin-board { padding: 12px; }
+  .pin-canvas {
+    display: block;
+    width: 100%;
+    height: auto;
+    touch-action: none;
+    border-radius: 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+  }
+  .pin-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 12px;
+    flex-wrap: wrap;
+  }
+  .pin-level {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 14px;
+    border-radius: 999px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text-dim);
+  }
+  .pin-level .lv {
+    color: var(--accent-2);
+    font-variant-numeric: tabular-nums;
+  }
+  .pin-remain {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text-dim);
+  }
+  .pin-remain b {
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+    font-size: 15px;
+  }
+  .pin-actions { display: flex; gap: 8px; }
+  .pin-hint {
+    text-align: center;
+    color: var(--text-mute);
+    font-size: 12px;
+    margin-top: 12px;
+  }
+  .pin-hint .kbd { margin: 0 2px; }
+  /* 旋转方向小指示 */
+  .spin-ind {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--accent-3);
+    box-shadow: 0 0 8px var(--accent-3);
+    animation: spinpulse 1.2s ease-in-out infinite;
+  }
+  @keyframes spinpulse { 0%,100%{opacity:.4} 50%{opacity:1} }
+</style>
+</head>
+<body>
+<div class="game-shell">
+  <div class="game-topbar">
+    <a class="back" href="/" aria-label="返回游戏大厅">‹</a>
+    <div class="title">见缝插针<small>旋转圆盘·空位插针</small></div>
+    <div class="stats">
+      <div class="stat" data-stat="score"><span class="k">得分</span><span class="v" id="scoreV">0</span></div>
+      <div class="stat" data-stat="best"><span class="k">最高</span><span class="v accent" id="bestV">0</span></div>
+    </div>
+    <button class="icon-btn" id="themeBtn" aria-label="切换主题">◐</button>
+    <button class="icon-btn" id="helpBtn" aria-label="规则">?</button>
+  </div>
+
+  <div class="game-stage">
+    <div class="game-board pin-board">
+      <canvas id="cv" class="pin-canvas"></canvas>
+      <div class="pin-meta">
+        <div class="pin-level"><span class="spin-ind" id="spinInd"></span>第 <span class="lv" id="lvV">1</span> 关</div>
+        <div class="pin-remain">本轮还需插入 <b id="remV">0</b> 根</div>
+        <div class="pin-actions">
+          <button class="btn sm" id="restartBtn">重开</button>
+        </div>
+      </div>
+      <div class="pin-hint">点击 / 触摸 / <span class="kbd">空格</span> 发射针</div>
+    </div>
+  </div>
+</div>
+
+<script src="/assets/game.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  const KEY = "pin";
+  const cv = document.getElementById("cv");
+  const ctx = cv.getContext("2d");
+
+  const scoreV = document.getElementById("scoreV");
+  const bestV  = document.getElementById("bestV");
+  const lvV    = document.getElementById("lvV");
+  const remV   = document.getElementById("remV");
+
+  // ---- 几何 / 尺寸 ----
+  let W = 0, H = 0, DPR = 1;          // CSS 像素
+  let cx = 0, cy = 0;                 // 圆盘中心
+  let R = 0;                          // 圆盘半径
+  const PIN_LEN = 26;                 // 针的长度（CSS px）
+  const PIN_W = 4;                     // 针杆宽度
+  const CAP_R = 5;                     // 针帽半径
+  const ANG_TOL = 0.085;               // 角度碰撞容差（弧度）
+  const FIRE_DIST = 70;               // 针从下方飞入的距离
+  const FIRE_MS = 170;                 // 飞入动画时长
+
+  // ---- 主题颜色 ----
+  let palette = {};
+  function loadPalette() {
+    const cs = getComputedStyle(document.documentElement);
+    const get = (n) => cs.getPropertyValue(n).trim();
+    palette = {
+      text:   get("--text"),
+      dim:    get("--text-dim"),
+      accent: get("--accent"),
+      accent2:get("--accent-2"),
+      accent3:get("--accent-3"),
+      good:   get("--good"),
+      bad:    get("--bad"),
+      surface:get("--surface"),
+      border: get("--border"),
+    };
+  }
+
+  // ---- 游戏状态 ----
+  let state = "idle";  // idle | playing | firing | over | levelup
+  let level = 1;
+  let score = 0;
+  let best  = SG.best(KEY);
+  let rot = 0;              // 圆盘旋转角（弧度）
+  let spinSpeed = 0;        // 当前角速度
+  let spinDir = 1;
+  let pins = [];            // 已插入的针：{ ang: 弧度（圆盘局部，0=右，PI/2=下） }
+  let flying = null;        // 正在飞入的针：{ t0, fromY, targetY }
+  let remain = 0;           // 本关还需插入针数
+  let levelMsgT = 0;        // 过关闪动时间戳
+  let lastTime = 0;
+
+  bestV.textContent = best;
+
+  // ---- 关卡参数 ----
+  function levelParams(n) {
+    const initPins  = Math.min(2 + Math.floor((n - 1) * 0.7), 9);   // 初始针数
+    const need      = 4 + n;                                       // 需要插入针数
+    const baseSpeed = 0.55 + (n - 1) * 0.16;                       // 基础角速度 rad/s
+    const speed     = Math.min(baseSpeed, 2.4);
+    return { initPins, need, speed };
+  }
+
+  function startLevel(n) {
+    level = n;
+    const p = levelParams(n);
+    rot = Math.random() * Math.PI * 2;
+    // 偶数关反向旋转，增加变化
+    spinDir = (n % 2 === 0) ? -1 : 1;
+    spinSpeed = p.speed * spinDir;
+    pins = [];
+    // 在圆盘上均匀放置初始针，并加随机偏移，避免与底部插入点重合
+    const baseAng = Math.random() * Math.PI * 2;
+    for (let i = 0; i < p.initPins; i++) {
+      pins.push({ ang: baseAng + (i / p.initPins) * Math.PI * 2 });
+    }
+    remain = p.need;
+    flying = null;
+    state = "playing";
+    updateHUD();
+    lvV.textContent = n;
+  }
+
+  function updateHUD() {
+    scoreV.textContent = score;
+    bestV.textContent  = best;
+    remV.textContent   = remain;
+  }
+
+  function newGame() {
+    score = 0;
+    best  = SG.best(KEY);
+    startLevel(1);
+  }
+
+  // ---- 发射针 ----
+  function fire() {
+    if (state !== "playing") return;
+    if (flying) return; // 一次只能有一根飞行中的针
+    const targetY = cy + R;                       // 圆盘下边缘
+    flying = { t0: performance.now(), fromY: targetY + FIRE_DIST, targetY: targetY };
+    state = "firing";
+    if (navigator.vibrate) navigator.vibrate(8);
+  }
+
+  // 飞行结束时判定
+  function resolveInsert() {
+    // 插入点世界角 = π/2（向下）
+    const worldAng = Math.PI / 2;
+    const localAng = worldAng - rot;
+    // 碰撞检测
+    for (const p of pins) {
+      let d = Math.abs(normAng(p.ang - localAng));
+      if (d < ANG_TOL) {
+        gameOver();
+        return;
+      }
+    }
+    // 成功插入
+    pins.push({ ang: localAng });
+    remain--;
+    score += 10;
+    if (SG.best(KEY, score) > best) best = SG.best(KEY);
+    updateHUD();
+    if (remain <= 0) {
+      levelClear();
+    } else {
+      state = "playing";
+    }
+  }
+
+  function levelClear() {
+    score += 50 + level * 10; // 过关奖励
+    if (SG.best(KEY, score) > best) best = SG.best(KEY);
+    updateHUD();
+    state = "levelup";
+    levelMsgT = performance.now();
+    if (navigator.vibrate) navigator.vibrate([10, 40, 10]);
+    // 1.1s 后进入下一关
+    setTimeout(() => {
+      if (state === "levelup") startLevel(level + 1);
+    }, 1100);
+  }
+
+  function gameOver() {
+    state = "over";
+    flying = null;
+    if (SG.best(KEY, score) > best) best = SG.best(KEY);
+    bestV.textContent = best;
+    if (navigator.vibrate) navigator.vibrate([20, 60, 20, 60, 20]);
+    const ov = SG.overlay({
+      title: "插偏了",
+      body: "第 " + level + " 关 · 共插入 " + (levelParams(level).need - remain - 1) + " 根针",
+      score: score,
+      buttons: [
+        { text: "重玩", kind: "primary", onClick: () => { ov.hide(); newGame(); } },
+        { text: "继续本关", kind: "", onClick: () => { ov.hide(); startLevel(level); } },
+      ],
+    });
+    ov.show();
+  }
+
+  // ---- 角度归一到 [-π, π] ----
+  function normAng(a) {
+    while (a > Math.PI) a -= Math.PI * 2;
+    while (a < -Math.PI) a += Math.PI * 2;
+    return a;
+  }
+
+  // ---- 尺寸 / DPR ----
+  function resize() {
+    const rect = cv.getBoundingClientRect();
+    // 让 canvas 保持正方形，限制最大 460
+    const size = Math.min(rect.width, 460);
+    const cssSize = Math.max(280, size);
+    DPR = window.devicePixelRatio || 1;
+    cv.style.height = cssSize + "px";
+    cv.width  = Math.round(cssSize * DPR);
+    cv.height = Math.round(cssSize * DPR);
+    W = cssSize;
+    H = cssSize;
+    cx = W / 2;
+    cy = H / 2 - 6;
+    R = Math.min(W, H) * 0.26;
+    loadPalette();
+  }
+
+  // ---- 渲染 ----
+  function draw(now) {
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+
+    // 圆盘外圈光晕
+    ctx.save();
+    const grad = ctx.createLinearGradient(cx - R, cy - R, cx + R, cy + R);
+    grad.addColorStop(0, palette.accent || "#8b5cf6");
+    grad.addColorStop(1, palette.accent2 || "#ec4899");
+
+    // 中心圆盘
+    ctx.beginPath();
+    ctx.arc(cx, cy, R, 0, Math.PI * 2);
+    ctx.fillStyle = grad;
+    ctx.shadowColor = "rgba(0,0,0,.35)";
+    ctx.shadowBlur = 18;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    // 中心小圆 hub
+    ctx.beginPath();
+    ctx.arc(cx, cy, R * 0.32, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(255,255,255,.10)";
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = palette.border || "rgba(255,255,255,.12)";
+    ctx.stroke();
+
+    // 中心点
+    ctx.beginPath();
+    ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+    ctx.fillStyle = palette.text || "#fff";
+    ctx.fill();
+    ctx.restore();
+
+    // 已插入的针（随圆盘旋转）
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(rot);
+    ctx.lineCap = "round";
+    ctx.lineWidth = PIN_W;
+    ctx.strokeStyle = palette.text || "#fff";
+    for (const p of pins) {
+      const ax = Math.cos(p.ang) * R;
+      const ay = Math.sin(p.ang) * R;
+      const bx = Math.cos(p.ang) * (R + PIN_LEN);
+      const by = Math.sin(p.ang) * (R + PIN_LEN);
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(bx, by);
+      ctx.stroke();
+      // 帽
+      ctx.beginPath();
+      ctx.arc(bx, by, CAP_R, 0, Math.PI * 2);
+      ctx.fillStyle = palette.accent2 || "#ec4899";
+      ctx.fill();
+    }
+    ctx.restore();
+
+    // 底部插入点标记（空位提示）
+    const worldAng = Math.PI / 2;
+    const markX = cx + Math.cos(worldAng) * (R + PIN_LEN + 14);
+    const markY = cy + Math.sin(worldAng) * (R + PIN_LEN + 14);
+    ctx.beginPath();
+    ctx.arc(markX, markY, 3, 0, Math.PI * 2);
+    ctx.fillStyle = (state === "playing") ? (palette.accent3 || "#38bdf8") : (palette.dim || "#888");
+    ctx.fill();
+
+    // 飞行中的针
+    if (flying) {
+      const t = Math.min(1, (now - flying.t0) / FIRE_MS);
+      const y = flying.fromY + (flying.targetY - flying.fromY) * easeOut(t);
+      const x = cx;
+      // 针杆从 y 到 y + PIN_LEN（针尖朝上）
+      ctx.save();
+      ctx.lineCap = "round";
+      ctx.lineWidth = PIN_W;
+      ctx.strokeStyle = palette.text || "#fff";
+      ctx.beginPath();
+      ctx.moveTo(x, y + PIN_LEN);
+      ctx.lineTo(x, y);
+      ctx.stroke();
+      // 针帽在底部
+      ctx.beginPath();
+      ctx.arc(x, y + PIN_LEN + CAP_R * 0.5, CAP_R, 0, Math.PI * 2);
+      ctx.fillStyle = palette.accent2 || "#ec4899";
+      ctx.fill();
+      ctx.restore();
+
+      if (t >= 1) {
+        flying = null;
+        resolveInsert();
+      }
+    }
+
+    // 过关闪动
+    if (state === "levelup") {
+      const dt = now - levelMsgT;
+      const alpha = Math.max(0, 1 - dt / 1000);
+      ctx.save();
+      ctx.globalAlpha = alpha * 0.9;
+      ctx.fillStyle = palette.good || "#34d399";
+      ctx.font = "800 26px 'PingFang SC', system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("第 " + level + " 关 完成", cx, cy + R + PIN_LEN + 34);
+      ctx.restore();
+    }
+  }
+
+  function easeOut(t) { return 1 - Math.pow(1 - t, 3); }
+
+  // ---- 主循环 ----
+  function loop(now) {
+    if (!lastTime) lastTime = now;
+    const dt = Math.min(0.05, (now - lastTime) / 1000);
+    lastTime = now;
+
+    if (state === "playing" || state === "firing" || state === "levelup") {
+      rot += spinSpeed * dt;
+    }
+
+    draw(now);
+    requestAnimationFrame(loop);
+  }
+
+  // ---- 输入 ----
+  function onTap(e) {
+    if (e) e.preventDefault();
+    if (state === "playing") fire();
+  }
+  cv.addEventListener("pointerdown", onTap);
+  // 阻止双击缩放
+  cv.addEventListener("touchstart", (e) => { e.preventDefault(); }, { passive: false });
+  cv.addEventListener("touchmove", (e) => { e.preventDefault(); }, { passive: false });
+
+  window.addEventListener("keydown", (e) => {
+    if (e.code === "Space" || e.code === "Enter" || e.code === "ArrowUp") {
+      e.preventDefault();
+      if (state === "playing") fire();
+    }
+  });
+
+  document.getElementById("restartBtn").addEventListener("click", () => newGame());
+  document.getElementById("themeBtn").addEventListener("click", () => {
+    SG.toggleTheme();
+    loadPalette();
+  });
+  document.getElementById("helpBtn").addEventListener("click", () => {
+    const ov = SG.overlay({
+      title: "见缝插针",
+      body: "中心圆盘在旋转，上面已有若干针。点击屏幕或按 <span class='kbd'>空格</span> 从下方发射一根针，插入圆盘边缘的空位。<br><br>针碰到已有针即结束。成功插入本关所需针数即过关，进入下一关（针更多、转得更快、方向会反转）。",
+      buttons: [{ text: "开始", kind: "primary", onClick: () => ov.hide() }],
+    });
+    ov.show();
+  });
+
+  window.addEventListener("resize", () => { resize(); });
+
+  // ---- 启动 ----
+  // 防止页面滚动
+  document.addEventListener("touchmove", (e) => { if (e.target === cv) e.preventDefault(); }, { passive: false });
+
+  resize();
+  newGame();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>

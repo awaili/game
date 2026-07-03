@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>推箱子 Sokoban · slowpapa</title>
+<meta name="description" content="经典推箱子 H5 小游戏：6 关内置谜题，方向键 / 滑动 / 屏幕方向键操控，撤销一步、重置本关，箱子上目标即变色，全部到位自动过关。">
+<link rel="stylesheet" href="/assets/game.css">
+<style>
+  /* ---- Sokoban-specific ---- */
+  .soko-head {
+    display:flex; align-items:center; justify-content:space-between;
+    gap:10px; margin-bottom:10px; flex-wrap:wrap;
+  }
+  .level-pills { display:flex; gap:6px; flex-wrap:wrap; }
+  .level-pills .pill {
+    width:30px; height:30px; border-radius:9px;
+    background:var(--surface-2); border:1px solid var(--border);
+    color:var(--text-dim); font-size:13px; font-weight:800;
+    display:grid; place-items:center; cursor:pointer;
+    transition:transform .12s ease, background .2s ease, color .2s ease;
+    font-variant-numeric: tabular-nums;
+  }
+  .level-pills .pill:active { transform:scale(.92); }
+  .level-pills .pill.done { background:var(--good); color:#062; border-color:transparent; }
+  .level-pills .pill.cur {
+    background:var(--grad); color:#fff; border-color:transparent;
+    box-shadow:var(--shadow-soft);
+  }
+  .step-tag {
+    font-size:12px; color:var(--text-mute); font-weight:700;
+    letter-spacing:.04em;
+  }
+  .step-tag b { color:var(--text); font-size:14px; font-variant-numeric:tabular-nums; }
+
+  #grid {
+    display:grid;
+    width:100%;
+    aspect-ratio: var(--cols, 8) / var(--rows, 8);
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:var(--radius-sm);
+    overflow:hidden;
+    touch-action:none;
+    user-select:none;
+  }
+  .cell {
+    position:relative;
+    display:grid; place-items:center;
+    background:transparent;
+  }
+  /* wall */
+  .cell.w {
+    background:
+      linear-gradient(135deg, rgba(139,92,246,.28), rgba(236,72,153,.22)),
+      var(--surface-2);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.05);
+  }
+  /* floor — subtle dot */
+  .cell.f::before {
+    content:""; width:3px; height:3px; border-radius:50%;
+    background:var(--border);
+  }
+  /* target ring */
+  .cell.t::after {
+    content:""; position:absolute; inset:18%;
+    border-radius:50%;
+    border:2px dashed var(--accent-3);
+    opacity:.8;
+    animation: pulse 1.8s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100%{opacity:.45; transform:scale(.92);} 50%{opacity:.9; transform:scale(1);} }
+
+  /* box */
+  .box {
+    position:absolute; inset:10%;
+    border-radius:22%;
+    background:linear-gradient(160deg, var(--accent), var(--accent-2));
+    box-shadow: 0 3px 8px -3px rgba(0,0,0,.5), inset 0 2px 0 rgba(255,255,255,.25);
+    transition: transform .12s ease, background .2s ease, box-shadow .2s ease;
+  }
+  .box::after {
+    content:""; position:absolute; inset:24%;
+    border-radius:22%;
+    border:2px solid rgba(255,255,255,.35);
+  }
+  .box.on {
+    background:linear-gradient(160deg, var(--good), #10b981);
+    box-shadow: 0 0 0 2px rgba(52,211,153,.35), 0 3px 10px -3px rgba(16,185,129,.6), inset 0 2px 0 rgba(255,255,255,.3);
+  }
+  /* player */
+  .player {
+    position:absolute; inset:14%;
+    border-radius:50%;
+    background:radial-gradient(circle at 35% 30%, #fff, var(--accent-2) 70%, var(--accent) 100%);
+    box-shadow: 0 3px 8px -2px rgba(0,0,0,.5), inset 0 -2px 4px rgba(0,0,0,.15);
+    transition: transform .1s ease;
+    z-index:2;
+  }
+  .player::after { /* eye direction hint */
+    content:""; position:absolute; inset:0;
+    border-radius:50%;
+    background:radial-gradient(circle at 50% 22%, rgba(255,255,255,.85) 0 4px, transparent 5px);
+  }
+
+  .ctrls { display:flex; gap:10px; justify-content:center; margin-top:14px; flex-wrap:wrap; }
+  .kbd-hint { text-align:center; color:var(--text-mute); font-size:11px; margin-top:10px; }
+</style>
+</head>
+<body>
+<div class="game-shell">
+  <div class="game-topbar">
+    <a class="back" href="/" aria-label="返回游戏大厅">‹</a>
+    <div class="title">推箱子<small>Sokoban · 6 关谜题</small></div>
+    <div class="stats">
+      <div class="stat" data-stat="step"><span class="k">步数</span><span class="v" id="stepV">0</span></div>
+    </div>
+    <button class="icon-btn" id="themeBtn" aria-label="切换主题">◐</button>
+    <button class="icon-btn" id="helpBtn" aria-label="规则">?</button>
+  </div>
+
+  <div class="game-stage">
+    <div class="game-board sokoban">
+      <div class="soko-head">
+        <div class="level-pills" id="pills"></div>
+        <div class="step-tag">第 <b id="lvV">1</b> 关 / 步 <b id="stepTag">0</b></div>
+      </div>
+      <div id="grid"></div>
+      <div class="ctrls">
+        <button class="btn sm" id="undoBtn">撤销 ↶</button>
+        <button class="btn sm" id="resetBtn">重置</button>
+      </div>
+      <div class="kbd-hint">方向键 / WASD 移动 · 滑动棋盘 · 屏幕方向键</div>
+    </div>
+  </div>
+
+  <div class="game-stage" style="flex:0; padding-top:0;">
+    <div class="touch-pad dir" id="pad">
+      <button class="pad-btn up" data-dir="up" aria-label="上">▲</button>
+      <button class="pad-btn left" data-dir="left" aria-label="左">◀</button>
+      <div class="pad-blank"></div>
+      <button class="pad-btn right" data-dir="right" aria-label="右">▶</button>
+      <button class="pad-btn down" data-dir="down" aria-label="下">▼</button>
+    </div>
+  </div>
+</div>
+
+<script src="/assets/game.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  // ---------- Levels (string maps) ----------
+  // # wall  . floor  $ box  o target  @ player  + player-on-target  * box-on-target
+  const LEVELS = [
+    [
+      "#######",
+      "#.....#",
+      "#@$..o#",
+      "#.....#",
+      "#######"
+    ],
+    [
+      "#######",
+      "#o....#",
+      "#.....#",
+      "#..$..#",
+      "#..@..#",
+      "#.....#",
+      "#######"
+    ],
+    [
+      "########",
+      "#......#",
+      "#.o.o..#",
+      "#......#",
+      "#.$.$..#",
+      "#..@...#",
+      "#......#",
+      "########"
+    ],
+    [
+      "#########",
+      "#.......#",
+      "#.ooo...#",
+      "#.......#",
+      "#.$$$...#",
+      "#...@...#",
+      "#.......#",
+      "#########"
+    ],
+    [
+      "########",
+      "#......#",
+      "#..##..#",
+      "#..##..#",
+      "#.$.o..#",
+      "#..@...#",
+      "#......#",
+      "########"
+    ],
+    [
+      "########",
+      "#......#",
+      "#.o.o..#",
+      "#......#",
+      "#.$.$..#",
+      "#......#",
+      "#.o.o..#",
+      "#......#",
+      "#.$.$..#",
+      "#......#",
+      "#..@...#",
+      "#......#",
+      "########"
+    ]
+  ];
+
+  // ---------- State ----------
+  const key = "sokoban";
+  const gridEl = document.getElementById("grid");
+  const stepV = document.getElementById("stepV");
+  const stepTag = document.getElementById("stepTag");
+  const lvV = document.getElementById("lvV");
+  const pillsEl = document.getElementById("pills");
+
+  let cur = 0;            // current level index
+  let cols = 0, rows = 0;
+  let walls = [];          // 2D bool
+  let targets = [];        // 2D bool (true if target on this cell)
+  let player = { x: 0, y: 0 };
+  let boxes = [];          // array of {x,y}
+  let history = [];        // undo stack: snapshots {player, boxes}
+  let steps = 0;
+  let done = new Set();    // completed level indices (persisted)
+
+  // load progress
+  try {
+    const saved = JSON.parse(localStorage.getItem("slowpapa-sokoban-done") || "[]");
+    done = new Set(saved);
+  } catch (e) { done = new Set(); }
+
+  const DIRS = {
+    up:    { dx: 0,  dy: -1 },
+    down:  { dx: 0,  dy: 1 },
+    left:  { dx: -1, dy: 0 },
+    right: { dx: 1,  dy: 0 }
+  };
+
+  // ---------- Parse ----------
+  function loadLevel(idx) {
+    const map = LEVELS[idx];
+    rows = map.length;
+    cols = Math.max(...map.map(r => r.length));
+    walls = []; targets = []; boxes = []; history = []; steps = 0;
+    for (let y = 0; y < rows; y++) {
+      walls[y] = []; targets[y] = [];
+      const row = map[y];
+      for (let x = 0; x < cols; x++) {
+        const ch = row[x] || " ";
+        walls[y][x] = (ch === "#");
+        targets[y][x] = (ch === "o" || ch === "+" || ch === "*");
+        if (ch === "@" || ch === "+") player = { x, y };
+        if (ch === "$" || ch === "*") boxes.push({ x, y });
+      }
+    }
+    render();
+    updateHud();
+  }
+
+  // ---------- Render ----------
+  function render() {
+    gridEl.style.setProperty("--cols", cols);
+    gridEl.style.setProperty("--rows", rows);
+    gridEl.innerHTML = "";
+    // box lookup
+    const boxAt = (x, y) => boxes.find(b => b.x === x && b.y === y);
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        const c = document.createElement("div");
+        c.className = "cell";
+        if (walls[y][x]) {
+          c.classList.add("w");
+        } else if (targets[y][x]) {
+          c.classList.add("t");
+        } else {
+          c.classList.add("f");
+        }
+        const b = boxAt(x, y);
+        if (b) {
+          const box = document.createElement("div");
+          box.className = "box" + (targets[y][x] ? " on" : "");
+          c.appendChild(box);
+        }
+        if (player.x === x && player.y === y) {
+          const p = document.createElement("div");
+          p.className = "player";
+          c.appendChild(p);
+        }
+        gridEl.appendChild(c);
+      }
+    }
+  }
+
+  function updateHud() {
+    stepV.textContent = steps;
+    stepTag.textContent = steps;
+    lvV.textContent = cur + 1;
+    // pills
+    pillsEl.innerHTML = "";
+    LEVELS.forEach((_, i) => {
+      const p = document.createElement("div");
+      p.className = "pill" + (i === cur ? " cur" : "") + (done.has(i) ? " done" : "");
+      p.textContent = i + 1;
+      p.title = "第 " + (i + 1) + " 关";
+      p.onclick = () => { cur = i; loadLevel(i); };
+      pillsEl.appendChild(p);
+    });
+  }
+
+  // ---------- Move ----------
+  function move(dir) {
+    const d = DIRS[dir]; if (!d) return;
+    const nx = player.x + d.dx, ny = player.y + d.dy;
+    if (ny < 0 || ny >= rows || nx < 0 || nx >= cols) return;
+    if (walls[ny][nx]) return;
+    const bIdx = boxes.findIndex(b => b.x === nx && b.y === ny);
+    if (bIdx >= 0) {
+      // try push
+      const bx = nx + d.dx, by = ny + d.dy;
+      if (by < 0 || by >= rows || bx < 0 || bx >= cols) return;
+      if (walls[by][bx]) return;
+      if (boxes.some(b => b.x === bx && b.y === by)) return;
+      // snapshot for undo
+      history.push({
+        player: { x: player.x, y: player.y },
+        boxes: boxes.map(b => ({ x: b.x, y: b.y }))
+      });
+      boxes[bIdx] = { x: bx, y: by };
+      player = { x: nx, y: ny };
+    } else {
+      history.push({
+        player: { x: player.x, y: player.y },
+        boxes: boxes.map(b => ({ x: b.x, y: b.y }))
+      });
+      player = { x: nx, y: ny };
+    }
+    steps++;
+    render();
+    updateHud();
+    navigator.vibrate?.(8);
+    if (isWin()) onWin();
+  }
+
+  function isWin() {
+    return boxes.every(b => targets[b.y] && targets[b.y][b.x]);
+  }
+
+  function onWin() {
+    done.add(cur);
+    try { localStorage.setItem("slowpapa-sokoban-done", JSON.stringify([...done])); } catch (e) {}
+    updateHud();
+    navigator.vibrate?.([20, 60, 20]);
+    const isLast = cur >= LEVELS.length - 1;
+    const ov = SG.overlay({
+      title: "过关！",
+      body: "第 " + (cur + 1) + " 关完成 · 用 " + steps + " 步" +
+            (isLast ? "<br>已通关全部 " + LEVELS.length + " 关！" : ""),
+      buttons: [
+        { text: "重玩本关", kind: "", onClick: () => { ov.hide(); loadLevel(cur); } },
+        { text: isLast ? "从头再来" : "下一关", kind: "primary", onClick: () => {
+          ov.hide();
+          cur = isLast ? 0 : cur + 1;
+          loadLevel(cur);
+        } }
+      ]
+    });
+    ov.show();
+  }
+
+  function undo() {
+    if (!history.length) { SG.toast?.("没有可撤销的步骤"); return; }
+    const s = history.pop();
+    player = s.player;
+    boxes = s.boxes;
+    steps = Math.max(0, steps - 1);
+    render();
+    updateHud();
+  }
+
+  function reset() {
+    loadLevel(cur);
+  }
+
+  // ---------- Input ----------
+  const keyMap = {
+    ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right",
+    w: "up", s: "down", a: "left", d: "right",
+    W: "up", S: "down", A: "left", D: "right"
+  };
+  window.addEventListener("keydown", e => {
+    if (keyMap[e.key]) { e.preventDefault(); move(keyMap[e.key]); return; }
+    if (e.key === "z" || e.key === "Z" || e.key === "Backspace") { e.preventDefault(); undo(); }
+    if (e.key === "r" || e.key === "R") { e.preventDefault(); reset(); }
+  });
+
+  // swipe on grid
+  SG.swipe(gridEl, dir => move(dir));
+
+  // on-screen pad
+  document.getElementById("pad").addEventListener("click", e => {
+    const b = e.target.closest("[data-dir]");
+    if (b) move(b.dataset.dir);
+  });
+
+  // buttons
+  document.getElementById("undoBtn").onclick = undo;
+  document.getElementById("resetBtn").onclick = reset;
+  document.getElementById("themeBtn").onclick = () => SG.toggleTheme();
+  document.getElementById("helpBtn").onclick = () => {
+    const ov = SG.overlay({
+      title: "规则",
+      body: "把所有箱子推到发光的目标点上即可过关。<br>" +
+            "箱子只能推、不能拉，注意别把箱子顶进死角。<br><br>" +
+            "操作：方向键 / WASD · 棋盘滑动 · 屏幕方向键<br>" +
+            "Z / Backspace 撤销 · R 重置本关",
+      buttons: [{ text: "开始", kind: "primary", onClick: () => ov.hide() }]
+    });
+    ov.show();
+  };
+
+  // prevent pinch / double-tap zoom
+  document.addEventListener("gesturestart", e => e.preventDefault());
+  let lastTap = 0;
+  document.addEventListener("touchend", e => {
+    const now = Date.now();
+    if (now - lastTap < 300) e.preventDefault();
+    lastTap = now;
+  }, { passive: false });
+
+  // boot
+  loadLevel(cur);
+})();
+</script>
+</body>
+</html>

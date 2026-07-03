@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="description" content="数独 Sudoku — 9×9 经典数字益智，三档难度，本地生成，计时挑战最佳。">
+  <title>数独 · Slowpapa</title>
+  <link rel="stylesheet" href="/assets/game.css">
+  <style>
+    /* ---- 数独局部样式 ---- */
+    .game-board.sudoku { width: min(94vw, 460px); padding: 10px; }
+
+    .sdk-toolbar {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 10px; width: min(94vw, 460px); margin: 0 auto 10px;
+      flex-wrap: wrap;
+    }
+    .sdk-toolbar .segment button { padding: 7px 12px; }
+    .sdk-toolbar .timer {
+      font-variant-numeric: tabular-nums; font-weight: 800; font-size: 15px;
+      color: var(--text); letter-spacing: .5px;
+    }
+    .sdk-toolbar .timer small { color: var(--text-mute); font-weight: 600; font-size: 11px; margin-right: 4px; }
+    .sdk-toolbar .bestT { color: var(--accent-2); }
+
+    /* 9×9 网格 */
+    .sdk-grid {
+      display: grid;
+      grid-template-columns: repeat(9, 1fr);
+      grid-template-rows: repeat(9, 1fr);
+      aspect-ratio: 1 / 1;
+      width: 100%;
+      background: var(--border);
+      gap: 1px;
+      border: 2px solid var(--text);
+      border-radius: 6px;
+      overflow: hidden;
+      user-select: none;
+      touch-action: manipulation;
+    }
+    .sdk-cell {
+      background: var(--surface-2);
+      display: grid; place-items: center;
+      font-size: clamp(18px, 5.2vw, 26px);
+      font-weight: 700;
+      color: var(--text);
+      cursor: pointer;
+      position: relative;
+      transition: background .12s ease, color .12s ease;
+      font-variant-numeric: tabular-nums;
+    }
+    /* 3×3 宫分隔：通过给第3/6列、第3/6行加粗右边/下边框 */
+    .sdk-cell.bx-r { border-right: 2px solid var(--text); }
+    .sdk-cell.bx-b { border-bottom: 2px solid var(--text); }
+
+    .sdk-cell.given { color: var(--text); font-weight: 800; }
+    .sdk-cell.user { color: var(--accent-2); }
+    .sdk-cell.peer { background: var(--surface); }
+    .sdk-cell.same  { background: rgba(139,92,246,.22); }
+    .sdk-cell.selected { background: rgba(236,72,153,.30); outline: 2px solid var(--accent-2); outline-offset: -2px; z-index: 1; }
+    .sdk-cell.conflict { color: var(--bad) !important; background: rgba(248,113,113,.18); }
+    .sdk-cell.hint-flash { animation: hintFlash .6s ease; }
+    @keyframes hintFlash {
+      0% { background: rgba(56,189,248,.55); }
+      100% { background: transparent; }
+    }
+    .sdk-cell.error-flash { animation: errShake .4s ease; }
+    @keyframes errShake {
+      0%,100% { transform: translateX(0); }
+      25% { transform: translateX(-2px); }
+      75% { transform: translateX(2px); }
+    }
+
+    /* 数字盘 */
+    .num-pad {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 8px;
+      width: min(94vw, 460px);
+      margin: 14px auto 0;
+    }
+    .num-pad .btn {
+      height: 46px; padding: 0; font-size: 19px; font-weight: 800;
+      border-radius: var(--radius-sm);
+      font-variant-numeric: tabular-nums;
+    }
+    .num-pad .btn.erase { color: var(--bad); }
+    .num-pad .btn.done { opacity: .35; }
+
+    .action-row { margin-top: 10px; }
+    .action-row .btn { height: 40px; padding: 0 14px; font-size: 13px; }
+
+    .hint { margin-top: 8px; }
+    .hint .kbd { margin: 0 2px; }
+  </style>
+</head>
+<body>
+  <div class="game-shell">
+    <div class="game-topbar">
+      <a class="back" href="/" aria-label="返回游戏大厅">‹</a>
+      <div class="title">数独<small>9×9 数字益智</small></div>
+      <div class="stats">
+        <div class="stat" data-stat="best"><span class="k">最佳</span><span class="v accent" id="bestV">--</span></div>
+      </div>
+      <button class="icon-btn" id="themeBtn" aria-label="切换主题">◐</button>
+      <button class="icon-btn" id="help" aria-label="规则">?</button>
+    </div>
+
+    <div class="game-stage">
+      <div style="display:flex;flex-direction:column;align-items:center;width:100%;">
+        <div class="sdk-toolbar">
+          <div class="segment" id="diff" role="group" aria-label="难度">
+            <button data-d="easy" aria-pressed="true">简单</button>
+            <button data-d="medium" aria-pressed="false">中等</button>
+            <button data-d="hard" aria-pressed="false">困难</button>
+          </div>
+          <div class="timer"><small>用时</small><span id="timerV">00:00</span></div>
+        </div>
+
+        <div class="game-board sudoku">
+          <div class="sdk-grid" id="grid" role="grid" aria-label="数独棋盘"></div>
+        </div>
+
+        <div class="num-pad" id="numPad" aria-label="数字盘">
+          <button class="btn" data-n="1">1</button>
+          <button class="btn" data-n="2">2</button>
+          <button class="btn" data-n="3">3</button>
+          <button class="btn" data-n="4">4</button>
+          <button class="btn" data-n="5">5</button>
+          <button class="btn" data-n="6">6</button>
+          <button class="btn" data-n="7">7</button>
+          <button class="btn" data-n="8">8</button>
+          <button class="btn" data-n="9">9</button>
+          <button class="btn erase" data-n="0" aria-label="擦除">⌫</button>
+        </div>
+
+        <div class="action-row" id="actRow">
+          <button class="btn" id="undoBtn">撤销</button>
+          <button class="btn" id="hintBtn">提示</button>
+          <button class="btn" id="checkBtn">检查</button>
+          <button class="btn primary" id="newBtn">重开</button>
+        </div>
+
+        <p class="hint">点格子选数 · <span class="kbd">1-9</span> 填数 · <span class="kbd">⌫</span> 擦除 · <span class="kbd">↑↓←→</span> 移动</p>
+      </div>
+    </div>
+  </div>
+
+  <script src="/assets/game.js"></script>
+  <script>
+  (function () {
+    "use strict";
+    /* ===================== 数独 Sudoku ===================== */
+    const N = 9;
+    const KEY = "sudoku";
+    const BEST_OFFSET = 100000; // 用 (OFFSET - 秒) 存最佳时间，秒越小值越大，适配 SG.best 取 max
+
+    /* 难度：挖洞数量（去掉的格子数） */
+    const DIFF = {
+      easy:   { holes: 38, label: "简单" },
+      medium: { holes: 48, label: "中等" },
+      hard:   { holes: 55, label: "困难" },
+    };
+
+    /* ---- 状态 ----
+       solution: 完整解 (Int16Array 长度 81, 0 表示空)
+       puzzle:   当前谜题初始状态（含 0）
+       board:    当前棋盘（玩家填入后的状态）
+       given:    布尔，是否为题目给定
+       history:  撤销栈 [{idx, prev}]
+    */
+    let solution = null;
+    let puzzle = null;
+    let board = null;
+    let given = null;
+    let history = [];
+    let sel = -1;          // 选中格索引 -1
+    let difficulty = "easy";
+    let startedAt = 0;
+    let elapsed = 0;       // 秒
+    let timerId = 0;
+    let finished = false;
+    let hintsUsed = 0;
+
+    const gridEl = document.getElementById("grid");
+    const timerEl = document.getElementById("timerV");
+    const bestEl = document.getElementById("bestV");
+    const cellEls = []; // 81 个 div
+
+    /* ---- 工具 ---- */
+    function idx(r, c) { return r * N + c; }
+    function rowOf(i) { return Math.floor(i / N); }
+    function colOf(i) { return i % N; }
+    function boxOf(i) { return Math.floor(rowOf(i) / 3) * 3 + Math.floor(colOf(i) / 3); }
+
+    /* ---- 生成器：回溯生成完整解 ---- */
+    function shuffle(arr) {
+      for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        const t = arr[i]; arr[i] = arr[j]; arr[j] = t;
+      }
+      return arr;
+    }
+
+    // 在 grid (Int16Array) 上回溯填数，返回 true 成功
+    function fillFull(grid) {
+      const stack = [0];
+      // 每个空位预生成随机数字顺序
+      const orders = [];
+      for (let i = 0; i < 81; i++) orders.push(shuffle([1,2,3,4,5,6,7,8,9]));
+      let pos = 0;
+      while (pos >= 0 && pos < 81) {
+        if (grid[pos] !== 0) { pos++; continue; }
+        const order = orders[pos];
+        let placed = false;
+        // 找下一个可用数字（从上次试到的位置之后）
+        const start = grid._tryPos && grid._tryPos[pos] || 0;
+        for (let k = start; k < 9; k++) {
+          const v = order[k];
+          if (canPlace(grid, pos, v)) {
+            grid[pos] = v;
+            grid._tryPos = grid._tryPos || {};
+            grid._tryPos[pos] = k + 1;
+            placed = true;
+            break;
+          }
+        }
+        if (placed) {
+          pos++;
+        } else {
+          // 回溯
+          grid[pos] = 0;
+          if (grid._tryPos) grid._tryPos[pos] = 0;
+          pos--;
+          // 清掉上一格的尝试位置以重新尝试下一数字
+          if (pos >= 0 && grid._tryPos) {
+            // 继续从保存位置尝试，无需清零
+          }
+        }
+      }
+      return pos >= 81;
+    }
+
+    // 简洁版回溯（不保存 tryPos，每次从头扫描 order），更可靠
+    function fillFull2(grid) {
+      // 用递归回溯
+      function bt(p) {
+        if (p === 81) return true;
+        if (grid[p] !== 0) return bt(p + 1);
+        const order = shuffle([1,2,3,4,5,6,7,8,9]);
+        for (const v of order) {
+          if (canPlace(grid, p, v)) {
+            grid[p] = v;
+            if (bt(p + 1)) return true;
+            grid[p] = 0;
+          }
+        }
+        return false;
+      }
+      // 随机化起手：先随机填几个对角宫，再回溯，增加随机性
+      // 直接 bt 即可，order 已随机
+      return bt(0);
+    }
+
+    function canPlace(grid, p, v) {
+      const r = rowOf(p), c = colOf(p), b = boxOf(p);
+      for (let i = 0; i < 9; i++) {
+        if (grid[idx(r, i)] === v) return false;
+        if (grid[idx(i, c)] === v) return false;
+      }
+      const br = Math.floor(b / 3) * 3, bc = (b % 3) * 3;
+      for (let rr = br; rr < br + 3; rr++)
+        for (let cc = bc; cc < bc + 3; cc++)
+          if (grid[idx(rr, cc)] === v) return false;
+      return true;
+    }
+
+    /* ---- 挖洞 + 唯一解校验 ---- */
+    // 解数计数（最多 limit），用于唯一性校验
+    function countSolutions(grid, limit) {
+      let cnt = 0;
+      function bt(p) {
+        if (cnt >= limit) return;
+        if (p === 81) { cnt++; return; }
+        if (grid[p] !== 0) { bt(p + 1); return; }
+        for (let v = 1; v <= 9; v++) {
+          if (canPlace(grid, p, v)) {
+            grid[p] = v;
+            bt(p + 1);
+            grid[p] = 0;
+            if (cnt >= limit) return;
+          }
+        }
+      }
+      bt(0);
+      return cnt;
+    }
+
+    // 从完整解挖 holes 个洞，保证唯一解
+    function digHoles(sol, holes) {
+      const puz = Int16Array.from(sol);
+      const order = shuffle([...Array(81).keys()]);
+      let removed = 0;
+      let attempts = 0;
+      const maxAttempts = 81;
+      for (const i of order) {
+        if (removed >= holes) break;
+        if (attempts++ > maxAttempts + 20) break;
+        if (puz[i] === 0) continue;
+        const backup = puz[i];
+        puz[i] = 0;
+        // 校验唯一解；非唯一则恢复
+        if (countSolutions(puz, 2) !== 1) {
+          puz[i] = backup;
+        } else {
+          removed++;
+        }
+      }
+      return puz;
+    }
+
+    function generatePuzzle(diff) {
+      const sol = Int16Array.from({ length: 81 }, () => 0);
+      // 先填三个对角宫增加随机性，再回溯
+      fillDiagonalBoxes(sol);
+      fillFull2(sol);
+      const puz = digHoles(sol, DIFF[diff].holes);
+      return { solution: sol, puzzle: puz };
+    }
+
+    // 填三个对角宫（左上、中、右下）—— 每宫内 1-9 随机排列，相互独立
+    function fillDiagonalBoxes(grid) {
+      for (let b = 0; b < 3; b++) {
+        const br = b * 3, bc = b * 3;
+        const nums = shuffle([1,2,3,4,5,6,7,8,9]);
+        let k = 0;
+        for (let r = br; r < br + 3; r++)
+          for (let c = bc; c < bc + 3; c++)
+            grid[idx(r, c)] = nums[k++];
+      }
+    }
+
+    /* ---- 渲染 ---- */
+    function buildGrid() {
+      gridEl.innerHTML = "";
+      cellEls.length = 0;
+      for (let i = 0; i < 81; i++) {
+        const r = rowOf(i), c = colOf(i);
+        const el = document.createElement("div");
+        el.className = "sdk-cell";
+        el.setAttribute("role", "gridcell");
+        el.dataset.i = String(i);
+        // 3×3 分隔：第 2、5 列右边加粗，第 2、5 行下边加粗
+        if (c === 2 || c === 5) el.classList.add("bx-r");
+        if (r === 2 || r === 5) el.classList.add("bx-b");
+        el.addEventListener("click", () => selectCell(i));
+        gridEl.appendChild(el);
+        cellEls.push(el);
+      }
+    }
+
+    function render() {
+      for (let i = 0; i < 81; i++) {
+        const el = cellEls[i];
+        const v = board[i];
+        el.textContent = v === 0 ? "" : String(v);
+        el.classList.toggle("given", given[i] && v !== 0);
+        el.classList.toggle("user", !given[i] && v !== 0);
+      }
+      renderHighlights();
+      renderNumPad();
+    }
+
+    function renderHighlights() {
+      // 清状态
+      for (let i = 0; i < 81; i++) {
+        const el = cellEls[i];
+        el.classList.remove("selected", "peer", "same", "conflict");
+      }
+      // 冲突高亮
+      for (let i = 0; i < 81; i++) {
+        if (board[i] !== 0 && hasConflict(i)) {
+          cellEls[i].classList.add("conflict");
+        }
+      }
+      if (sel < 0) return;
+      const sv = board[sel];
+      const sr = rowOf(sel), sc = colOf(sel), sb = boxOf(sel);
+      for (let i = 0; i < 81; i++) {
+        const el = cellEls[i];
+        if (i === sel) { el.classList.add("selected"); continue; }
+        const r = rowOf(i), c = colOf(i), b = boxOf(i);
+        if (r === sr || c === sc || b === sb) el.classList.add("peer");
+        if (sv !== 0 && board[i] === sv) el.classList.add("same");
+      }
+    }
+
+    function renderNumPad() {
+      // 每个数字若已用满 9 次，标灰
+      const counts = new Array(10).fill(0);
+      for (let i = 0; i < 81; i++) if (board[i] !== 0) counts[board[i]]++;
+      document.querySelectorAll("#numPad .btn").forEach(b => {
+        const n = parseInt(b.dataset.n, 10);
+        if (n === 0) return;
+        b.classList.toggle("done", counts[n] >= 9);
+      });
+    }
+
+    function hasConflict(p) {
+      const v = board[p];
+      if (v === 0) return false;
+      const r = rowOf(p), c = colOf(p), b = boxOf(p);
+      for (let i = 0; i < 9; i++) {
+        if (i !== c && board[idx(r, i)] === v) return true;
+        if (i !== r && board[idx(i, c)] === v) return true;
+      }
+      const br = Math.floor(b / 3) * 3, bc = (b % 3) * 3;
+      for (let rr = br; rr < br + 3; rr++)
+        for (let cc = bc; cc < bc + 3; cc++) {
+          if (idx(rr, cc) === p) continue;
+          if (board[idx(rr, cc)] === v) return true;
+        }
+      return false;
+    }
+
+    /* ---- 选择 / 填数 ---- */
+    function selectCell(i) {
+      sel = i;
+      renderHighlights();
+    }
+
+    function inputNumber(n) {
+      if (finished || sel < 0) return;
+      if (given[sel]) { flashError(sel); return; }
+      const prev = board[sel];
+      if (prev === n) return; // 无变化
+      history.push({ idx: sel, prev });
+      board[sel] = n;
+      render();
+      if (n !== 0) navigator.vibrate?.(8);
+      checkComplete();
+    }
+
+    function flashError(i) {
+      const el = cellEls[i];
+      el.classList.remove("error-flash");
+      void el.offsetWidth;
+      el.classList.add("error-flash");
+    }
+
+    /* ---- 撤销 ---- */
+    function undo() {
+      if (finished || !history.length) { SG.toast?.("没有可撤销的步骤"); return; }
+      const h = history.pop();
+      board[h.idx] = h.prev;
+      selectCell(h.idx);
+      render();
+    }
+
+    /* ---- 提示 ---- */
+    function hint() {
+      if (finished) return;
+      // 找一个空格或错误格，填入正确值
+      let target = -1;
+      if (sel >= 0 && !given[sel] && board[sel] !== solution[sel]) {
+        target = sel;
+      } else {
+        const empties = [];
+        for (let i = 0; i < 81; i++) if (!given[i] && board[i] !== solution[i]) empties.push(i);
+        if (!empties.length) { SG.toast?.("已全部正确"); return; }
+        target = empties[Math.floor(Math.random() * empties.length)];
+      }
+      history.push({ idx: target, prev: board[target] });
+      board[target] = solution[target];
+      hintsUsed++;
+      selectCell(target);
+      render();
+      const el = cellEls[target];
+      el.classList.remove("hint-flash");
+      void el.offsetWidth;
+      el.classList.add("hint-flash");
+      navigator.vibrate?.(15);
+      checkComplete();
+    }
+
+    /* ---- 检查 ---- */
+    function check() {
+      if (finished) return;
+      let empty = 0, wrong = 0;
+      for (let i = 0; i < 81; i++) {
+        if (board[i] === 0) empty++;
+        else if (hasConflict(i)) wrong++;
+      }
+      let body;
+      if (empty === 0 && wrong === 0) {
+        body = "全部填写正确！";
+      } else {
+        body = `空格 <b>${empty}</b> · 冲突 <b style="color:var(--bad)">${wrong}</b>`;
+      }
+      const ov = SG.overlay({
+        title: "检查",
+        body,
+        buttons: [{ text: "继续", kind: "primary", onClick: () => ov.hide() }],
+      });
+      ov.show();
+    }
+
+    /* ---- 完成判定 ---- */
+    function checkComplete() {
+      for (let i = 0; i < 81; i++) if (board[i] === 0 || hasConflict(i)) return;
+      // 全部填满且无冲突 → 胜利
+      win();
+    }
+
+    function win() {
+      finished = true;
+      stopTimer();
+      const secs = elapsed;
+      // 最佳时间：秒数越小越好，用 (OFFSET - secs) 存入 SG.best（取 max）
+      const bestVal = SG.best(KEY, BEST_OFFSET - secs);
+      const bestSecs = BEST_OFFSET - bestVal; // 当前最佳秒数
+      const isBest = (BEST_OFFSET - bestVal) === secs;
+      const fmt = formatTime(secs);
+      bestEl.textContent = formatTime(bestSecs);
+      navigator.vibrate?.([20, 40, 20, 40, 60]);
+      const ov = SG.overlay({
+        title: "完成！",
+        body: `难度 <b>${DIFF[difficulty].label}</b> · 用时 <b>${fmt}</b>` +
+              (hintsUsed > 0 ? ` · 提示 ${hintsUsed} 次` : "") +
+              (isBest ? "<br><b style='color:var(--accent-2)'>★ 创造最佳记录！</b>" : ""),
+        buttons: [
+          { text: "再来一局", kind: "primary", onClick: () => { ov.hide(); newGame(); } },
+        ],
+      });
+      ov.show();
+    }
+
+    /* ---- 计时 ---- */
+    function formatTime(s) {
+      const m = Math.floor(s / 60), ss = s % 60;
+      return String(m).padStart(2, "0") + ":" + String(ss).padStart(2, "0");
+    }
+    function startTimer() {
+      startedAt = Date.now() - elapsed * 1000;
+      stopTimer();
+      timerId = setInterval(() => {
+        elapsed = Math.floor((Date.now() - startedAt) / 1000);
+        timerEl.textContent = formatTime(elapsed);
+      }, 500);
+    }
+    function stopTimer() { if (timerId) { clearInterval(timerId); timerId = 0; } }
+
+    /* ---- 新游戏 ---- */
+    function newGame() {
+      stopTimer();
+      // 生成（可能耗时，先显示 loading）
+      SG.toast?.("生成新题目…", 600);
+      // 用 setTimeout 让 toast 渲染
+      setTimeout(() => {
+        const { solution: s, puzzle: p } = generatePuzzle(difficulty);
+        solution = s;
+        puzzle = p;
+        board = Int16Array.from(p);
+        given = Array.from({ length: 81 }, (_, i) => p[i] !== 0);
+        history = [];
+        sel = -1;
+        elapsed = 0;
+        hintsUsed = 0;
+        finished = false;
+        timerEl.textContent = "00:00";
+        render();
+        startTimer();
+      }, 30);
+    }
+
+    /* ---- 规则 ---- */
+    function showRules() {
+      const ov = SG.overlay({
+        title: "怎么玩数独",
+        body:
+          "在 9×9 格子里填入 1-9，使<b>每行、每列、每个 3×3 宫</b>都包含 1-9 且不重复。" +
+          "<br><br>点格子选中，再点底部数字盘填数（<b>⌫</b> 擦除）。" +
+          "同行/列/宫会高亮，冲突数字标红。" +
+          "<br><br>支持 <b>撤销</b>、<b>提示</b>、<b>检查</b>，完成后自动计时。" +
+          "<br><br>三档难度由本地生成器即时造题，每题保证唯一解。",
+        buttons: [{ text: "开始", kind: "primary", onClick: () => ov.hide() }],
+      });
+      ov.show();
+    }
+
+    /* ---- 难度切换 ---- */
+    function setDifficulty(d) {
+      if (d === difficulty) return;
+      difficulty = d;
+      document.querySelectorAll("#diff button").forEach(b => {
+        b.setAttribute("aria-pressed", String(b.dataset.d === d));
+      });
+      newGame();
+    }
+
+    /* ---- 事件 ---- */
+    // 数字盘
+    document.getElementById("numPad").addEventListener("click", e => {
+      const b = e.target.closest(".btn");
+      if (!b) return;
+      inputNumber(parseInt(b.dataset.n, 10));
+    });
+    // 操作行
+    document.getElementById("undoBtn").addEventListener("click", undo);
+    document.getElementById("hintBtn").addEventListener("click", hint);
+    document.getElementById("checkBtn").addEventListener("click", check);
+    document.getElementById("newBtn").addEventListener("click", newGame);
+    document.getElementById("help").addEventListener("click", showRules);
+    document.getElementById("themeBtn").addEventListener("click", () => {
+      SG.toggleTheme();
+      render();
+    });
+    // 难度
+    document.getElementById("diff").addEventListener("click", e => {
+      const b = e.target.closest("button");
+      if (b) setDifficulty(b.dataset.d);
+    });
+
+    // 键盘
+    window.addEventListener("keydown", e => {
+      if (e.key >= "1" && e.key <= "9") {
+        e.preventDefault(); inputNumber(parseInt(e.key, 10));
+      } else if (e.key === "Backspace" || e.key === "Delete" || e.key === "0") {
+        e.preventDefault(); inputNumber(0);
+      } else if (e.key === "z" || e.key === "Z") {
+        if (e.ctrlKey || e.metaKey) { e.preventDefault(); undo(); }
+      } else if (e.key === "h" || e.key === "H") {
+        e.preventDefault(); hint();
+      } else if (e.key.startsWith("Arrow")) {
+        e.preventDefault();
+        if (sel < 0) { selectCell(40); return; }
+        let r = rowOf(sel), c = colOf(sel);
+        if (e.key === "ArrowLeft") c = (c + 8) % 9;
+        else if (e.key === "ArrowRight") c = (c + 1) % 9;
+        else if (e.key === "ArrowUp") r = (r + 8) % 9;
+        else if (e.key === "ArrowDown") r = (r + 1) % 9;
+        selectCell(idx(r, c));
+      }
+    });
+
+    // 防滚动 / 双击缩放
+    document.addEventListener("touchmove", e => {
+      if (e.target.closest(".sdk-grid") || e.target.closest(".num-pad")) e.preventDefault();
+    }, { passive: false });
+    let lastTap = 0;
+    document.addEventListener("touchend", e => {
+      const now = Date.now();
+      if (now - lastTap < 300) e.preventDefault();
+      lastTap = now;
+    }, { passive: false });
+
+    /* ---- 初始化 ---- */
+    function initBestDisplay() {
+      const v = SG.best(KEY);
+      bestEl.textContent = v > 0 ? formatTime(BEST_OFFSET - v) : "--";
+    }
+
+    buildGrid();
+    initBestDisplay();
+    newGame();
+  })();
+  </script>
+</body>
+</html>

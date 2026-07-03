@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="description" content="倒水排序 — 点选试管倒入，把每管颜色归一即胜。可撤销、重置、三档难度。" />
+<title>倒水排序 · Slowpapa</title>
+<link rel="stylesheet" href="/assets/game.css" />
+<style>
+  /* ---- 本游戏专属样式 ---- */
+  .ws-stage { padding: 10px; }
+  .ws-board { width: min(94vw, 440px); }
+  .ws-canvas {
+    display: block;
+    width: 100%;
+    height: auto;
+    touch-action: none;
+    border-radius: 14px;
+    background: transparent;
+  }
+  .ws-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 12px;
+    flex-wrap: wrap;
+  }
+  .ws-toolbar .seg-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .ws-toolbar .seg-label {
+    font-size: 11px;
+    color: var(--text-mute);
+    font-weight: 700;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+  }
+  .ws-actions { display: flex; gap: 8px; }
+  .ws-hint {
+    text-align: center;
+    color: var(--text-mute);
+    font-size: 12px;
+    margin-top: 10px;
+  }
+</style>
+</head>
+<body>
+<div class="game-shell">
+  <div class="game-topbar">
+    <a class="back" href="/" aria-label="返回游戏大厅">‹</a>
+    <div class="title">倒水排序<small>把每管颜色归一即胜</small></div>
+    <div class="stats">
+      <div class="stat" data-stat="moves"><span class="k">步数</span><span class="v" id="movesV">0</span></div>
+      <div class="stat" data-stat="best"><span class="k">最少</span><span class="v" id="bestV" style="color:var(--accent-2)">—</span></div>
+    </div>
+    <button class="icon-btn" id="themeBtn" aria-label="切换主题">◐</button>
+    <button class="icon-btn" id="helpBtn" aria-label="规则">?</button>
+  </div>
+
+  <div class="game-stage ws-stage">
+    <div class="game-board ws-board">
+      <canvas class="ws-canvas" id="cv" width="440" height="320"></canvas>
+      <div class="ws-toolbar">
+        <div class="seg-wrap">
+          <span class="seg-label">难度</span>
+          <div class="segment" id="diffSeg">
+            <button data-diff="easy" aria-pressed="true">简单</button>
+            <button data-diff="med" aria-pressed="false">中等</button>
+            <button data-diff="hard" aria-pressed="false">困难</button>
+          </div>
+        </div>
+        <div class="ws-actions">
+          <button class="btn sm" id="undoBtn">撤销</button>
+          <button class="btn sm" id="resetBtn">重置</button>
+        </div>
+      </div>
+      <div class="ws-hint">点选一支试管，再点目标试管倒入；同色或空管可倒</div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  const KEY = "watersort";
+
+  /* ---- 难度配置 ----
+     colors: 颜色数（=已装满的试管数）；empties: 空试管数；cap: 每管容量 ---- */
+  const DIFFS = {
+    easy: { colors: 4, empties: 2, cap: 4 },
+    med:  { colors: 6, empties: 2, cap: 4 },
+    hard: { colors: 8, empties: 2, cap: 4 },
+  };
+
+  /* ---- 颜色调色板（canvas 需确定 hex，不用 CSS 变量） ---- */
+  const PALETTE = [
+    "#ef4444", // 红
+    "#f59e0b", // 橙
+    "#eab308", // 黄
+    "#22c55e", // 绿
+    "#06b6d4", // 青
+    "#3b82f6", // 蓝
+    "#a855f7", // 紫
+    "#ec4899", // 粉
+  ];
+
+  /* ---- 画布与布局 ---- */
+  const cv = document.getElementById("cv");
+  const ctx = cv.getContext("2d");
+  const W = 440;                 // 逻辑画布宽度（CSS 像素）
+  const PAD = 14;
+  const TUBE_W = 50;
+  const UNIT_H = 24;             // 每单位液体高度
+  const RIM = 6;                 // 试管顶部边沿高度
+  const GAP = 14;
+  const ROW_GAP = 28;
+  let dpr = 1;
+  let H = 320;                   // 逻辑画布高度，随行数动态调整
+
+  function fitCanvas() {
+    dpr = Math.max(1, window.devicePixelRatio || 1);
+    cv.width = Math.round(W * dpr);
+    cv.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  /* ---- 主题色读取（canvas 不能用 CSS 变量，按主题切换） ---- */
+  function themeColors() {
+    const light = document.documentElement.getAttribute("data-theme") === "light";
+    return {
+      glass: light ? "rgba(255,255,255,0.55)" : "rgba(255,255,255,0.05)",
+      glassStroke: light ? "rgba(80,60,160,0.30)" : "rgba(255,255,255,0.22)",
+      sel: light ? "#7c3aed" : "#a78bfa",
+      text: light ? "#1c1635" : "#f4f3ff",
+      dim: light ? "#56507a" : "#8a86ad",
+    };
+  }
+
+  /* ---- 游戏状态 ---- */
+  let cap = 4;            // 每管容量
+  let tubes = [];         // 数组的数组，底→顶，值为颜色索引或 -1（空位用更短的数组表示）
+  let cols = 1;           // 当前行列
+  let rows = 1;
+  let tubeH = 0;           // 单管高度
+  let selected = -1;      // 选中试管索引
+  let moves = 0;
+  let history = [];       // 撤销栈：保存 tubes 的深拷贝
+  let anim = null;        // 倾倒动画 {from,to,color,total,delivered,prog}
+  let won = false;
+  let bestMoves = 0;      // 最少步数纪录（0 表示未破）
+  let curDiff = "easy";
+
+  /* ---- 读取最高（最少步数）纪录 ---- */
+  function loadBest() {
+    const v = parseInt(localStorage.getItem("slowpapa-best-" + KEY) || "0", 10) || 0;
+    bestMoves = v;
+    document.getElementById("bestV").textContent = v > 0 ? String(v) : "—";
+  }
+  function saveBest(m) {
+    if (bestMoves === 0 || m < bestMoves) {
+      bestMoves = m;
+      localStorage.setItem("slowpapa-best-" + KEY, String(m));
+      document.getElementById("bestV").textContent = String(m);
+    }
+  }
+
+  /* ---- 布局：根据试管数确定列/行 ---- */
+  function layout(n) {
+    if (n <= 6) cols = n;
+    else if (n <= 8) cols = 4;
+    else cols = 5;
+    rows = Math.ceil(n / cols);
+  }
+
+  /* ---- 生成谜题 ---- */
+  function genPuzzle() {
+    const d = DIFFS[curDiff];
+    cap = d.cap;
+    const n = d.colors + d.empties;
+    layout(n);
+    // 构造颜色池：每种颜色 cap 个
+    let pool = [];
+    for (let c = 0; c < d.colors; c++) for (let k = 0; k < cap; k++) pool.push(c);
+    // 随机分入 d.colors 支管
+    let attempt = 0;
+    do {
+      tubes = [];
+      // 洗牌
+      const p = pool.slice();
+      for (let i = p.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [p[i], p[j]] = [p[j], p[i]];
+      }
+      for (let c = 0; c < d.colors; c++) {
+        tubes.push(p.slice(c * cap, (c + 1) * cap));
+      }
+      for (let e = 0; e < d.empties; e++) tubes.push([]);
+      // 打乱试管顺序
+      for (let i = tubes.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [tubes[i], tubes[j]] = [tubes[j], tubes[i]];
+      }
+      attempt++;
+    } while (isSolved() && attempt < 20);
+
+    // 画布高度
+    tubeH = RIM + cap * UNIT_H + 6;
+    H = rows * tubeH + (rows - 1) * ROW_GAP + PAD * 2;
+    cv.style.height = ""; // 由 width:auto 控制，逻辑高通过 dpr 体现
+    fitCanvas();
+
+    selected = -1;
+    moves = 0;
+    history = [];
+    anim = null;
+    won = false;
+    document.getElementById("movesV").textContent = "0";
+  }
+
+  /* ---- 试管位置 ---- */
+  function tubePos(i) {
+    const r = Math.floor(i / cols);
+    const c = i % cols;
+    const rowN = Math.min(cols, tubes.length - r * cols);
+    const rowW = rowN * TUBE_W + (rowN - 1) * GAP;
+    const startX = (W - rowW) / 2;
+    const x = startX + c * (TUBE_W + GAP);
+    const y = PAD + r * (tubeH + ROW_GAP);
+    return { x, y };
+  }
+
+  /* ---- 命中测试 ---- */
+  function hitTube(px, py) {
+    for (let i = 0; i < tubes.length; i++) {
+      const { x, y } = tubePos(i);
+      if (px >= x && px <= x + TUBE_W && py >= y && py <= y + tubeH) return i;
+    }
+    return -1;
+  }
+
+  /* ---- 顶部颜色 ---- */
+  function topColor(t) {
+    const arr = tubes[t];
+    return arr.length === 0 ? -1 : arr[arr.length - 1];
+  }
+  /* ---- 顶部连续同色数量 ---- */
+  function topRun(t) {
+    const arr = tubes[t];
+    if (arr.length === 0) return 0;
+    let c = arr[arr.length - 1], n = 1;
+    for (let i = arr.length - 2; i >= 0; i--) {
+      if (arr[i] === c) n++; else break;
+    }
+    return n;
+  }
+
+  /* ---- 尝试倾倒 ---- */
+  function tryPour(from, to) {
+    if (from === to) { selected = -1; return; }
+    if (tubes[from].length === 0) return; // 源空
+    if (tubes[to].length >= cap) return;  // 目标满
+    const sc = topColor(from);
+    const tc = topColor(to);
+    if (tc !== -1 && tc !== sc) return;   // 目标非空且不同色
+    const movable = Math.min(topRun(from), cap - tubes[to].length);
+    if (movable <= 0) return;
+    // 入栈历史
+    history.push(tubes.map(a => a.slice()));
+    // 启动动画：源立即移除，目标逐个加入
+    anim = { from, to, color: sc, total: movable, delivered: 0, prog: 0 };
+    // 源立刻移除这些单位（动画期间显示飞行中的液滴）
+    for (let i = 0; i < movable; i++) tubes[from].pop();
+    selected = -1;
+    navigator.vibrate?.(8);
+  }
+
+  /* ---- 撤销 ---- */
+  function undo() {
+    if (anim) return;
+    if (history.length === 0) { SG.toast("无可撤销"); return; }
+    tubes = history.pop();
+    selected = -1;
+    moves = Math.max(0, moves - 1);
+    document.getElementById("movesV").textContent = String(moves);
+    won = false;
+    navigator.vibrate?.(6);
+  }
+
+  /* ---- 胜利判定 ---- */
+  function isSolved() {
+    for (const t of tubes) {
+      if (t.length === 0) continue;
+      if (t.length !== cap) return false;
+      const c = t[0];
+      for (const v of t) if (v !== c) return false;
+    }
+    return true;
+  }
+
+  function checkWin() {
+    if (won) return;
+    if (isSolved()) {
+      won = true;
+      navigator.vibrate?.([14, 30, 14, 30, 20]);
+      saveBest(moves);
+      const ov = SG.overlay({
+        title: "完成！",
+        body: "所有试管已归一。<br>用时 " + moves + " 步" +
+              (bestMoves === moves ? "，新纪录！" : ("，最少 " + bestMoves + " 步")) + "。",
+        score: moves,
+        buttons: [
+          { text: "再来一局", kind: "primary", onClick: () => { genPuzzle(); ov.hide(); } },
+          { text: "关闭", onClick: () => ov.hide() },
+        ],
+      });
+      ov.show();
+    }
+  }
+
+  /* ---- 渲染 ---- */
+  function roundRectPath(x, y, w, h, rTop, rBot) {
+    ctx.beginPath();
+    ctx.moveTo(x + rTop, y);
+    ctx.lineTo(x + w - rTop, y);
+    ctx.arcTo(x + w, y, x + w, y + rTop, rTop);
+    ctx.lineTo(x + w, y + h - rBot);
+    ctx.arcTo(x + w, y + h, x + w - rBot, y + h, rBot);
+    ctx.lineTo(x + rBot, y + h);
+    ctx.arcTo(x, y + h, x, y + h - rBot, rBot);
+    ctx.lineTo(x, y + rTop);
+    ctx.arcTo(x, y, x + rTop, y, rTop);
+    ctx.closePath();
+  }
+
+  function drawTube(i) {
+    const { x, y } = tubePos(i);
+    const arr = tubes[i];
+    const tc = themeColors();
+    const isSel = i === selected;
+
+    // 选中光晕
+    if (isSel) {
+      ctx.save();
+      ctx.shadowColor = tc.sel;
+      ctx.shadowBlur = 18;
+      ctx.fillStyle = tc.sel;
+      roundRectPath(x - 2, y - 2, TUBE_W + 4, tubeH + 4, 8, 10);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // 玻璃背景
+    ctx.save();
+    roundRectPath(x, y, TUBE_W, tubeH, 7, 9);
+    ctx.clip();
+    ctx.fillStyle = tc.glass;
+    ctx.fillRect(x, y, TUBE_W, tubeH);
+    // 液体（从底向上）
+    for (let k = 0; k < arr.length; k++) {
+      const c = arr[k];
+      const ly = y + tubeH - 4 - (k + 1) * UNIT_H;
+      // 渐变让液体更立体
+      const g = ctx.createLinearGradient(x, ly, x + TUBE_W, ly);
+      g.addColorStop(0, shade(PALETTE[c], -0.12));
+      g.addColorStop(0.5, PALETTE[c]);
+      g.addColorStop(1, shade(PALETTE[c], 0.10));
+      ctx.fillStyle = g;
+      ctx.fillRect(x + 3, ly, TUBE_W - 6, UNIT_H + 1);
+      // 液面高光
+      ctx.fillStyle = "rgba(255,255,255,0.18)";
+      ctx.fillRect(x + 3, ly, TUBE_W - 6, 2);
+    }
+    ctx.restore();
+
+    // 试管轮廓
+    ctx.save();
+    ctx.strokeStyle = isSel ? tc.sel : tc.glassStroke;
+    ctx.lineWidth = isSel ? 2.4 : 1.4;
+    roundRectPath(x, y, TUBE_W, tubeH, 7, 9);
+    ctx.stroke();
+    // 管口加粗
+    ctx.strokeStyle = tc.glassStroke;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x - 2, y + 3);
+    ctx.lineTo(x + TUBE_W + 2, y + 3);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /* 颜色加深/减淡 */
+  function shade(hex, amt) {
+    const m = hex.replace("#", "");
+    let r = parseInt(m.slice(0, 2), 16), g = parseInt(m.slice(2, 4), 16), b = parseInt(m.slice(4, 6), 16);
+    r = Math.max(0, Math.min(255, Math.round(r + r * amt)));
+    g = Math.max(0, Math.min(255, Math.round(g + g * amt)));
+    b = Math.max(0, Math.min(255, Math.round(b + b * amt)));
+    return "rgb(" + r + "," + g + "," + b + ")";
+  }
+
+  /* 倾倒动画：液滴从源管口抛物线飞到目标管口 */
+  function drawAnim() {
+    if (!anim) return;
+    const { from, to, color, total, delivered, prog } = anim;
+    const fp = tubePos(from);
+    const tp = tubePos(to);
+    const sx = fp.x + TUBE_W / 2;
+    const sy = fp.y + 3;
+    // 目标当前液面高度（已包含 delivered 个）
+    const tx = tp.x + TUBE_W / 2;
+    const ty = tp.y + tubeH - 4 - (tubes[to].length + 1) * UNIT_H + UNIT_H / 2;
+    // 抛物线
+    const t = prog;
+    const x = sx + (tx - sx) * t;
+    const baseY = sy + (ty - sy) * t;
+    const arc = -Math.sin(t * Math.PI) * 28;
+    const yy = baseY + arc;
+    // 飞行液滴
+    ctx.save();
+    const g = ctx.createLinearGradient(x - 8, yy, x + 8, yy);
+    g.addColorStop(0, shade(PALETTE[color], -0.12));
+    g.addColorStop(1, shade(PALETTE[color], 0.12));
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.ellipse(x, yy, 9, 12, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.25)";
+    ctx.beginPath();
+    ctx.ellipse(x - 2, yy - 3, 3, 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function render() {
+    ctx.clearRect(0, 0, W, H);
+    for (let i = 0; i < tubes.length; i++) drawTube(i);
+    drawAnim();
+  }
+
+  /* ---- 主循环 ---- */
+  let last = performance.now();
+  function loop(now) {
+    let dt = (now - last) / 1000;
+    last = now;
+    if (dt > 0.05) dt = 0.05;
+    if (anim) {
+      anim.prog += dt * 4.2; // 单滴约 0.24s
+      if (anim.prog >= 1) {
+        // 一滴到达
+        tubes[anim.to].push(anim.color);
+        anim.delivered++;
+        anim.prog = 0;
+        if (anim.delivered >= anim.total) {
+          // 完成本次倾倒
+          anim = null;
+          moves++;
+          document.getElementById("movesV").textContent = String(moves);
+          checkWin();
+        }
+      }
+    }
+    render();
+    requestAnimationFrame(loop);
+  }
+
+  /* ---- 输入 ---- */
+  function cssPos(e) {
+    const rect = cv.getBoundingClientRect();
+    const cx = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
+    const cy = (e.touches ? e.touches[0].clientY : e.clientY) - rect.top;
+    return { x: cx * (W / rect.width), y: cy * (H / rect.height) };
+  }
+
+  function onTap(e) {
+    if (anim || won) return;
+    e.preventDefault();
+    const { x, y } = cssPos(e);
+    const i = hitTube(x, y);
+    if (i < 0) { selected = -1; return; }
+    if (selected === -1) {
+      if (tubes[i].length > 0) selected = i;
+    } else if (selected === i) {
+      selected = -1;
+    } else {
+      // 尝试倾倒
+      const sc = topColor(selected), tc = topColor(i);
+      const canPour = tubes[selected].length > 0 &&
+                      tubes[i].length < cap &&
+                      (tc === -1 || tc === sc);
+      if (canPour) {
+        tryPour(selected, i);
+      } else {
+        // 非法：改为选中目标（若非空），否则取消
+        selected = tubes[i].length > 0 ? i : -1;
+        navigator.vibrate?.(6);
+      }
+    }
+  }
+  cv.addEventListener("pointerdown", onTap, { passive: false });
+  cv.addEventListener("touchstart", e => e.preventDefault(), { passive: false });
+
+  /* ---- 键盘：数字键选管，字母/方向导航 ---- */
+  window.addEventListener("keydown", e => {
+    if (e.key === "z" || e.key === "Z") { undo(); e.preventDefault(); }
+    if (e.key === "r" || e.key === "R") { genPuzzle(); e.preventDefault(); }
+  });
+
+  /* ---- 按钮 ---- */
+  document.getElementById("themeBtn").addEventListener("click", () => SG.toggleTheme());
+  document.getElementById("undoBtn").addEventListener("click", undo);
+  document.getElementById("resetBtn").addEventListener("click", () => { genPuzzle(); SG.toast("新局已开始"); });
+  document.getElementById("helpBtn").addEventListener("click", () => {
+    const ov = SG.overlay({
+      title: "怎么玩",
+      body: "点选一支试管，再点目标试管，把顶部液体倒入。<br>" +
+            "只能倒入<b>同色</b>或<b>空管</b>，且目标管未满。<br>" +
+            "所有试管都只剩单一颜色（或为空）即胜利。<br>" +
+            "可<b>撤销</b>回退一步，<b>重置</b>开始新局。<br>" +
+            "键盘 Z=撤销，R=重置。",
+      buttons: [{ text: "知道了", kind: "primary", onClick: () => ov.hide() }],
+    });
+    ov.show();
+  });
+
+  /* ---- 难度切换 ---- */
+  const diffSeg = document.getElementById("diffSeg");
+  diffSeg.addEventListener("click", e => {
+    const btn = e.target.closest("button[data-diff]");
+    if (!btn) return;
+    curDiff = btn.dataset.diff;
+    [...diffSeg.children].forEach(b => b.setAttribute("aria-pressed", b === btn ? "true" : "false"));
+    genPuzzle();
+  });
+
+  /* ---- 启动 ---- */
+  loadBest();
+  genPuzzle();
+  window.addEventListener("resize", fitCanvas);
+  requestAnimationFrame(loop);
+})();
+</script>
+<script src="/assets/game.js"></script>
+</body>
+</html>

@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>贪吃蛇 Snake · slowpapa</title>
+<meta name="description" content="经典贪吃蛇 H5 小游戏：方向键 / 滑动 / 屏幕方向键操控，吃食物变长，速度随分数递增，可切换穿墙模式，最高分持久化。">
+<link rel="stylesheet" href="/assets/game.css">
+<style>
+  /* ---- Snake-specific layout ---- */
+  .snake-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+  .snake-head .label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--text-mute);
+  }
+  .snake-head .mini {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .stat-line {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    line-height: 1.05;
+  }
+  .stat-line .k { font-size: 10px; color: var(--text-mute); text-transform: uppercase; letter-spacing: .06em; }
+  .stat-line .v { font-size: 16px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .stat-line .v.accent { color: var(--accent-2); }
+
+  #play {
+    display: block;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 17 / 19;
+    max-height: 70vh;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    touch-action: none;
+  }
+  .game-board.snake { width: min(94vw, 420px); padding: 12px; }
+  @media (min-width: 420px) { .game-board.snake { width: min(94vw, 460px); } }
+
+  .ctrls {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    margin-top: 14px;
+    flex-wrap: wrap;
+  }
+
+  .wrap-toggle {
+    height: var(--tap);
+    padding: 0 16px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--text-dim);
+    font-weight: 700;
+    font-size: 13px;
+    cursor: pointer;
+    user-select: none;
+    transition: transform .12s ease, background .2s ease, color .2s ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .wrap-toggle:active { transform: scale(.95); }
+  .wrap-toggle[aria-pressed="true"] {
+    background: var(--grad);
+    color: #fff;
+    border: none;
+  }
+  .wrap-toggle .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--text-mute);
+    box-shadow: 0 0 0 2px var(--surface-2);
+  }
+  .wrap-toggle[aria-pressed="true"] .dot { background: #fff; }
+
+  .hint-bar {
+    text-align: center;
+    color: var(--text-mute);
+    font-size: 11px;
+    margin-top: 10px;
+    line-height: 1.6;
+  }
+  .hint-bar .kbd { margin: 0 2px; }
+
+  @media (max-width: 380px) {
+    .game-topbar .stats { gap: 6px; }
+    .game-topbar .stat .v { font-size: 13px; }
+    .game-topbar .stat .k { font-size: 9px; }
+  }
+</style>
+</head>
+<body>
+<div class="game-shell">
+  <div class="game-topbar">
+    <a class="back" href="/" aria-label="返回游戏大厅">‹</a>
+    <div class="title">贪吃蛇<small>方向键 / 滑动操控</small></div>
+    <div class="stats">
+      <div class="stat" data-stat="score"><span class="k">得分</span><span class="v" id="s-score">0</span></div>
+    </div>
+    <button class="icon-btn" id="btn-pause" aria-label="暂停">❚❚</button>
+    <button class="icon-btn" id="btn-help" aria-label="规则">?</button>
+    <button class="icon-btn" id="btn-theme" aria-label="切换主题">◐</button>
+  </div>
+
+  <div class="game-stage" id="stage">
+    <div class="game-board snake">
+      <div class="snake-head">
+        <div class="mini">
+          <div class="stat-line"><span class="k">长度</span><span class="v" id="s-len">3</span></div>
+        </div>
+        <div class="mini">
+          <div class="stat-line"><span class="k">最高分</span><span class="v accent" id="s-best">0</span></div>
+        </div>
+      </div>
+      <canvas id="play" width="340" height="380"></canvas>
+
+      <div class="ctrls">
+        <div class="touch-pad dir" id="dpad">
+          <button class="pad-btn up"    data-act="up"    aria-label="上">▲</button>
+          <button class="pad-btn left"  data-act="left"  aria-label="左">‹</button>
+          <div class="pad-blank"></div>
+          <button class="pad-btn right" data-act="right" aria-label="右">›</button>
+          <button class="pad-btn down"  data-act="down"  aria-label="下">▾</button>
+        </div>
+        <button class="wrap-toggle" id="wrap-toggle" aria-pressed="false" title="穿墙模式">
+          <span class="dot"></span>穿墙
+        </button>
+      </div>
+
+      <div class="hint-bar">
+        <span class="kbd">←</span><span class="kbd">→</span><span class="kbd">↑</span><span class="kbd">↓</span> 移动 ·
+        <span class="kbd">WASD</span> 移动 ·
+        <span class="kbd">P</span> 暂停 ·
+        <span class="kbd">空格</span> 重开
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/assets/game.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  /* ============ Constants ============ */
+  const COLS = 17, ROWS = 19;
+  const KEY = "snake";
+  const DIRS = {
+    up:    { x: 0, y: -1 },
+    down:  { x: 0, y: 1 },
+    left:  { x: -1, y: 0 },
+    right: { x: 1, y: 0 },
+  };
+  const OPPOSITE = { up: "down", down: "up", left: "right", right: "left" };
+  // base step interval in ms (lower = faster)
+  const BASE_MS = 160;
+  const MIN_MS = 60;
+  const SPEED_PER_FOOD = 4; // ms shaved off per food eaten
+
+  /* ============ State ============ */
+  let snake = [];          // array of {x,y}, head = [0]
+  let dir = "right";       // current moving direction
+  let pendingDir = "right";// next direction (applied on step)
+  let dirQueue = [];       // queued direction changes (allows two quick turns)
+  let food = null;         // {x,y}
+  let score = 0;
+  let paused = false;
+  let gameOver = false;
+  let wrapMode = false;    // wrap-through-walls toggle
+  let stepAcc = 0;
+  let lastTime = 0;
+  let rafId = 0;
+  let foodPulse = 0;       // ms accumulator for food pulse animation
+  let eatFlash = 0;        // ms remaining for eat flash on new head
+  let headAnim = 0;        // 0..1 grow pop animation
+  let lastEatAt = 0;
+
+  /* ============ DOM ============ */
+  const canvas = document.getElementById("play");
+  const ctx = canvas.getContext("2d");
+  const stage = document.getElementById("stage");
+  const elScore = document.getElementById("s-score");
+  const elLen   = document.getElementById("s-len");
+  const elBest  = document.getElementById("s-best");
+  const elPause = document.getElementById("btn-pause");
+  const elWrap  = document.getElementById("wrap-toggle");
+
+  let cell = 20;
+  let cssW = 340, cssH = 380;
+
+  /* ============ Theme / palette ============ */
+  function pal() {
+    const cs = getComputedStyle(document.documentElement);
+    const v = (name, fb) => (cs.getPropertyValue(name).trim() || fb);
+    return {
+      surface:  v("--surface", "rgba(255,255,255,.06)"),
+      border:   v("--border", "rgba(255,255,255,.12)"),
+      text:     v("--text", "#f4f3ff"),
+      textDim:  v("--text-dim", "#b9b6d8"),
+      accent:   v("--accent", "#8b5cf6"),
+      accent2:  v("--accent-2", "#ec4899"),
+      accent3:  v("--accent-3", "#38bdf8"),
+      good:     v("--good", "#34d399"),
+      bad:      v("--bad", "#f87171"),
+      warn:     v("--warn", "#fbbf24"),
+    };
+  }
+  let PAL = pal();
+  document.addEventListener("themechange", () => { PAL = pal(); draw(); });
+  const _toggle = SG.toggleTheme;
+  SG.toggleTheme = function () {
+    const r = _toggle.apply(this, arguments);
+    document.dispatchEvent(new Event("themechange"));
+    return r;
+  };
+
+  /* ============ Helpers ============ */
+  function stepInterval() {
+    // speed scales with score: each food shaves SPEED_PER_FOOD ms
+    return Math.max(MIN_MS, BASE_MS - score * SPEED_PER_FOOD);
+  }
+
+  function placeFood() {
+    const occupied = new Set(snake.map(s => s.x + "," + s.y));
+    const free = [];
+    for (let y = 0; y < ROWS; y++) {
+      for (let x = 0; x < COLS; x++) {
+        if (!occupied.has(x + "," + y)) free.push({ x, y });
+      }
+    }
+    if (free.length === 0) { food = null; return; }
+    food = free[Math.floor(Math.random() * free.length)];
+  }
+
+  function resetGame() {
+    const cy = Math.floor(ROWS / 2);
+    const cx = Math.floor(COLS / 2);
+    snake = [
+      { x: cx - 2, y: cy },
+      { x: cx - 1, y: cy },
+      { x: cx,     y: cy },
+    ];
+    dir = "right";
+    pendingDir = "right";
+    dirQueue = [];
+    score = 0;
+    stepAcc = 0;
+    lastTime = 0;
+    eatFlash = 0;
+    headAnim = 0;
+    gameOver = false;
+    paused = false;
+    elPause.textContent = "❚❚";
+    placeFood();
+    updateStats();
+  }
+
+  /* ============ Movement / step ============ */
+  function applyNextDir() {
+    // pull next queued direction if it isn't a reverse of the *current* committed dir
+    while (dirQueue.length) {
+      const nd = dirQueue.shift();
+      if (nd !== dir && nd !== OPPOSITE[dir]) {
+        pendingDir = nd;
+        break;
+      }
+    }
+  }
+
+  function step() {
+    applyNextDir();
+    dir = pendingDir;
+    const d = DIRS[dir];
+    const head = snake[snake.length - 1];
+    let nx = head.x + d.x;
+    let ny = head.y + d.y;
+
+    if (wrapMode) {
+      nx = (nx + COLS) % COLS;
+      ny = (ny + ROWS) % ROWS;
+    } else if (nx < 0 || nx >= COLS || ny < 0 || ny >= ROWS) {
+      return endGame("撞墙了");
+    }
+
+    // self collision: check against body excluding tail (tail moves away unless growing)
+    const willEat = food && nx === food.x && ny === food.y;
+    const bodyToCheck = willEat ? snake : snake.slice(1); // when not eating, tail vacates
+    for (const seg of bodyToCheck) {
+      if (seg.x === nx && seg.y === ny) {
+        return endGame("咬到自己了");
+      }
+    }
+
+    snake.push({ x: nx, y: ny });
+    if (willEat) {
+      score += 10;
+      eatFlash = 160;
+      headAnim = 1;
+      lastEatAt = performance.now();
+      navigator.vibrate?.(14);
+      placeFood();
+      updateStats();
+    } else {
+      snake.shift(); // drop tail
+    }
+  }
+
+  function endGame(reason) {
+    gameOver = true;
+    navigator.vibrate?.([20, 40, 30]);
+    const best = SG.best(KEY, score);
+    const ov = SG.overlay({
+      title: "游戏结束",
+      score: score,
+      body: (reason ? reason + "<br>" : "") + `长度 ${snake.length} · 最高分 ${best}`,
+      buttons: [
+        { text: "再来一局", kind: "primary", onClick: () => { ov.hide(); resetGame(); } },
+        { text: "返回大厅", kind: "", onClick: () => { location.href = "/"; } },
+      ],
+    });
+    ov.show();
+  }
+
+  function updateStats() {
+    elScore.textContent = score;
+    elLen.textContent = snake.length;
+    elBest.textContent = SG.best(KEY, score);
+  }
+
+  /* ============ Input ============ */
+  function setDir(nd) {
+    if (gameOver || paused) return;
+    // queue at most 2 turns to allow quick double-turns (e.g. up then left in one tick)
+    const last = dirQueue.length ? dirQueue[dirQueue.length - 1] : pendingDir;
+    if (nd === last) return;
+    if (nd === OPPOSITE[last]) return;
+    if (dirQueue.length < 2) dirQueue.push(nd);
+  }
+
+  // Keyboard
+  window.addEventListener("keydown", (e) => {
+    const k = e.key;
+    if (["ArrowLeft","ArrowRight","ArrowDown","ArrowUp"," "].includes(k)) e.preventDefault();
+    if (k === "ArrowUp"    || k === "w" || k === "W") setDir("up");
+    else if (k === "ArrowDown"  || k === "s" || k === "S") setDir("down");
+    else if (k === "ArrowLeft"  || k === "a" || k === "A") setDir("left");
+    else if (k === "ArrowRight" || k === "d" || k === "D") setDir("right");
+    else if (k === "p" || k === "P") togglePause();
+    else if (k === " " || k === "Spacebar") { if (gameOver) resetGame(); }
+  });
+
+  // On-screen dpad
+  document.getElementById("dpad").addEventListener("click", (e) => {
+    const act = e.target.dataset.act;
+    if (act) setDir(act);
+  });
+
+  // Swipe
+  SG.swipe(stage, (dir2) => {
+    if (gameOver) return;
+    setDir(dir2);
+  });
+
+  // Buttons
+  elPause.addEventListener("click", togglePause);
+  document.getElementById("btn-help").addEventListener("click", showHelp);
+  document.getElementById("btn-theme").addEventListener("click", () => SG.toggleTheme());
+  elWrap.addEventListener("click", () => {
+    wrapMode = !wrapMode;
+    elWrap.setAttribute("aria-pressed", String(wrapMode));
+    SG.toast(wrapMode ? "穿墙模式开启" : "撞墙模式开启");
+  });
+
+  // Prevent context menu / double-tap zoom
+  document.addEventListener("contextmenu", (e) => {
+    if (e.target.closest(".touch-pad, #play, .wrap-toggle")) e.preventDefault();
+  });
+  document.addEventListener("gesturestart", (e) => e.preventDefault());
+
+  /* ============ Pause / Help ============ */
+  let overlay = null;
+  function togglePause() {
+    if (gameOver) return;
+    paused = !paused;
+    elPause.textContent = paused ? "▶" : "❚❚";
+    if (paused) {
+      overlay = SG.overlay({
+        title: "已暂停",
+        body: "蛇在等你回来。",
+        buttons: [{ text: "继续", kind: "primary", onClick: () => { overlay.hide(); togglePause(); } }],
+      });
+      overlay.show();
+    } else {
+      if (overlay) { overlay.hide(); overlay = null; }
+      lastTime = 0; // avoid a huge dt jump
+    }
+  }
+
+  function showHelp() {
+    const wasPaused = paused || gameOver;
+    if (!paused && !gameOver) { paused = true; elPause.textContent = "▶"; }
+    overlay = SG.overlay({
+      title: "玩法",
+      body: "控制蛇头移动，吃食物变长，撞墙或咬到自己即结束。<br><br>" +
+            "<b>方向键 / WASD / 屏幕方向键 / 滑动</b> 控制方向<br>" +
+            "<b>P</b> 暂停 · <b>空格</b> 游戏结束后重开<br>" +
+            "每吃一颗食物 +10 分，速度随分数递增。<br>" +
+            "可切换<b>穿墙模式</b>：从一侧穿出从另一侧进入，不会撞墙。",
+      buttons: [{ text: "知道了", kind: "primary", onClick: () => {
+        overlay.hide();
+        if (!wasPaused) { paused = false; elPause.textContent = "❚❚"; lastTime = 0; }
+      }}],
+    });
+    overlay.show();
+  }
+
+  /* ============ Rendering ============ */
+  function resize() {
+    const rect = canvas.getBoundingClientRect();
+    cssW = rect.width;
+    cssH = rect.height;
+    if (!cssW || !cssH) return;
+    cell = cssW / COLS;
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    canvas.width = Math.round(cssW * dpr);
+    canvas.height = Math.round(cssH * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    draw();
+  }
+
+  function roundRect(c, x, y, w, h, r) {
+    r = Math.max(0, Math.min(r, Math.min(w, h) / 2));
+    c.beginPath();
+    c.moveTo(x + r, y);
+    c.arcTo(x + w, y, x + w, y + h, r);
+    c.arcTo(x + w, y + h, x, y + h, r);
+    c.arcTo(x, y + h, x, y, r);
+    c.arcTo(x, y, x + w, y, r);
+    c.closePath();
+  }
+
+  function drawCell(x, y, color, opts) {
+    opts = opts || {};
+    const inset = 1;
+    const px = x * cell, py = y * cell, s = cell - inset;
+    const r = Math.max(2, s * 0.22);
+    roundRect(ctx, px + inset, py + inset, s, s, r);
+    ctx.fillStyle = color;
+    ctx.fill();
+    // glossy top highlight
+    ctx.fillStyle = "rgba(255,255,255,0.22)";
+    roundRect(ctx, px + inset + 2, py + inset + 2, s - 4, Math.max(2, s * 0.28), r * 0.7);
+    ctx.fill();
+    // subtle inner border
+    ctx.strokeStyle = "rgba(0,0,0,0.22)";
+    ctx.lineWidth = 1;
+    roundRect(ctx, px + inset + 0.5, py + inset + 0.5, s - 1, s - 1, r);
+    ctx.stroke();
+  }
+
+  function draw() {
+    if (!cssW) return;
+    ctx.clearRect(0, 0, cssW, cssH);
+    // board background
+    ctx.fillStyle = PAL.surface;
+    ctx.fillRect(0, 0, cssW, cssH);
+    // checkerboard tint for depth
+    for (let y = 0; y < ROWS; y++) {
+      for (let x = 0; x < COLS; x++) {
+        if ((x + y) % 2 === 0) {
+          ctx.fillStyle = "rgba(255,255,255,0.025)";
+          ctx.fillRect(x * cell, y * cell, cell, cell);
+        }
+      }
+    }
+    // grid lines
+    ctx.strokeStyle = PAL.border;
+    ctx.lineWidth = 1;
+    for (let x = 1; x < COLS; x++) {
+      ctx.beginPath(); ctx.moveTo(x * cell, 0); ctx.lineTo(x * cell, cssH); ctx.stroke();
+    }
+    for (let y = 1; y < ROWS; y++) {
+      ctx.beginPath(); ctx.moveTo(0, y * cell); ctx.lineTo(cssW, y * cell); ctx.stroke();
+    }
+
+    // food (pulsing)
+    if (food) {
+      const pulse = 0.5 + 0.5 * Math.sin(foodPulse / 180 * Math.PI);
+      const px = food.x * cell, py = food.y * cell;
+      const cx = px + cell / 2, cy = py + cell / 2;
+      const baseR = cell * 0.30;
+      const r = baseR + cell * 0.06 * pulse;
+      // glow
+      const grad = ctx.createRadialGradient(cx, cy, r * 0.4, cx, cy, r * 2.2);
+      grad.addColorStop(0, PAL.accent2);
+      grad.addColorStop(1, "rgba(236,72,153,0)");
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r * 2.2, 0, Math.PI * 2);
+      ctx.fill();
+      // core
+      ctx.fillStyle = PAL.accent2;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fill();
+      // highlight
+      ctx.fillStyle = "rgba(255,255,255,0.5)";
+      ctx.beginPath();
+      ctx.arc(cx - r * 0.3, cy - r * 0.3, r * 0.28, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // snake body gradient from tail (dim) to head (bright)
+    const n = snake.length;
+    for (let i = 0; i < n; i++) {
+      const seg = snake[i];
+      const isHead = i === n - 1;
+      // interpolate accent-3 (tail) -> accent (head)
+      const t = n > 1 ? i / (n - 1) : 1;
+      let color;
+      if (isHead) {
+        color = PAL.accent;
+      } else {
+        color = mix(PAL.accent3, PAL.accent, t);
+      }
+      let opts = {};
+      if (isHead && headAnim > 0) {
+        // pop scale handled below via overlay draw
+      }
+      drawCell(seg.x, seg.y, color, opts);
+    }
+
+    // head detail: eyes + eat flash
+    const head = snake[n - 1];
+    if (head) {
+      const d = DIRS[dir];
+      const cx = head.x * cell + cell / 2;
+      const cy = head.y * cell + cell / 2;
+      const eyeOff = cell * 0.18;
+      const eyeR = Math.max(1.5, cell * 0.08);
+      // eye positions perpendicular to direction
+      const ex = -d.y, ey = d.x;
+      const fx = d.x * cell * 0.14, fy = d.y * cell * 0.14;
+      ctx.fillStyle = "#fff";
+      ctx.beginPath(); ctx.arc(cx + fx + ex * eyeOff, cy + fy + ey * eyeOff, eyeR, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(cx + fx - ex * eyeOff, cy + fy - ey * eyeOff, eyeR, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "#1a1030";
+      const pr = eyeR * 0.55;
+      ctx.beginPath(); ctx.arc(cx + fx + ex * eyeOff + d.x * pr * 0.6, cy + fy + ey * eyeOff + d.y * pr * 0.6, pr, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(cx + fx - ex * eyeOff + d.x * pr * 0.6, cy + fy - ey * eyeOff + d.y * pr * 0.6, pr, 0, Math.PI * 2); ctx.fill();
+
+      // eat flash ring
+      if (eatFlash > 0) {
+        const a = (eatFlash / 160) * 0.6;
+        ctx.strokeStyle = "rgba(255,255,255," + a.toFixed(3) + ")";
+        ctx.lineWidth = Math.max(2, cell * 0.12);
+        const rr = cell * (0.5 + (1 - eatFlash / 160) * 0.4);
+        ctx.beginPath();
+        ctx.arc(cx, cy, rr, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      // grow pop: scale head ring
+      if (headAnim > 0) {
+        const a = headAnim * 0.4;
+        ctx.strokeStyle = "rgba(139,92,246," + a.toFixed(3) + ")";
+        ctx.lineWidth = 2;
+        const rr = cell * (0.5 + (1 - headAnim) * 0.7);
+        ctx.beginPath();
+        ctx.arc(cx, cy, rr, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+
+    // paused veil
+    if (paused && !gameOver) {
+      ctx.fillStyle = "rgba(8,6,20,0.35)";
+      ctx.fillRect(0, 0, cssW, cssH);
+    }
+  }
+
+  // simple hex/rgba mix; expects two CSS colors. Uses a temp canvas to parse.
+  const _parseCanvas = document.createElement("canvas");
+  const _pctx = _parseCanvas.getContext("2d");
+  function parseColor(c) {
+    _pctx.fillStyle = "#000";
+    _pctx.fillStyle = c;
+    const m = /^rgba?\(([^)]+)\)$/.exec(_pctx.fillStyle);
+    if (m) return m[1].split(",").map(Number);
+    return [128, 128, 128, 1];
+  }
+  function mix(a, b, t) {
+    const ca = parseColor(a), cb = parseColor(b);
+    const r = Math.round(ca[0] + (cb[0] - ca[0]) * t);
+    const g = Math.round(ca[1] + (cb[1] - ca[1]) * t);
+    const bl = Math.round(ca[2] + (cb[2] - ca[2]) * t);
+    const al = (ca[3] ?? 1) + ((cb[3] ?? 1) - (ca[3] ?? 1)) * t;
+    return "rgba(" + r + "," + g + "," + bl + "," + al.toFixed(3) + ")";
+  }
+
+  /* ============ Loop ============ */
+  function frame(now) {
+    rafId = requestAnimationFrame(frame);
+    if (!lastTime) lastTime = now;
+    const dt = now - lastTime;
+    lastTime = now;
+
+    foodPulse += dt;
+    if (eatFlash > 0) eatFlash = Math.max(0, eatFlash - dt);
+    if (headAnim > 0) headAnim = Math.max(0, headAnim - dt / 320);
+
+    if (!paused && !gameOver) {
+      stepAcc += dt;
+      const interval = stepInterval();
+      let guard = 0;
+      while (stepAcc >= interval && guard < 4) {
+        stepAcc -= interval;
+        step();
+        guard++;
+        if (gameOver) break;
+      }
+    }
+    draw();
+  }
+
+  /* ============ Boot ============ */
+  let resizeTimer = 0;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(resize, 80);
+  });
+
+  resetGame();
+  rafId = requestAnimationFrame(frame);
+  requestAnimationFrame(resize);
+})();
+</script>
+</body>
+</html>

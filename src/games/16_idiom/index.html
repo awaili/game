@@ -1,0 +1,875 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>成语接龙 - Slowpapa</title>
+  <meta name="description" content="成语接龙 Idiom Solitaire：内置 200+ 常用成语，玩家与 AI 轮流以末字接首字（同字优先、可同音），计分连胜，可跳过、提示，移动端键盘友好。Slowpapa 益智游戏大厅。">
+  <link rel="stylesheet" href="/assets/game.css">
+  <style>
+    /* ---- idiom solitaire board (inline, theme-aware) ---- */
+    .game-board { display: flex; flex-direction: column; gap: 14px; }
+
+    /* chain head card — the idiom the next player must follow */
+    .head-card {
+      position: relative;
+      background: var(--grad-soft);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 14px 14px 12px;
+      text-align: center;
+    }
+    .head-card .label {
+      font-size: 11px; font-weight: 700; letter-spacing: .12em;
+      color: var(--text-mute); text-transform: uppercase;
+    }
+    .head-card .who {
+      display: inline-block; margin-left: 8px;
+      font-size: 11px; font-weight: 700; color: var(--accent-3);
+    }
+    .head-word {
+      font-size: 30px; font-weight: 900; letter-spacing: 8px;
+      margin: 6px 0 2px; line-height: 1.2;
+      font-variant-numeric: tabular-nums;
+    }
+    .head-word .tail {
+      color: var(--accent-2);
+      text-shadow: 0 0 14px rgba(236,72,153,.45);
+      animation: pulse 1.6s ease-in-out infinite;
+    }
+    @keyframes pulse { 0%,100% { opacity: .8; } 50% { opacity: 1; } }
+    .head-py {
+      font-size: 12px; color: var(--text-mute); letter-spacing: 1px;
+      font-variant-numeric: tabular-nums;
+    }
+    .head-card.shake { animation: shake .35s ease; }
+    @keyframes shake { 0%,100%{transform:translateX(0)} 25%{transform:translateX(-6px)} 75%{transform:translateX(6px)} }
+
+    /* chain history strip */
+    .chain-strip {
+      display: flex; gap: 6px; overflow-x: auto; padding: 2px 2px 4px;
+      scrollbar-width: thin;
+    }
+    .chain-strip::-webkit-scrollbar { height: 4px; }
+    .chain-strip::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+    .chips { display: flex; gap: 6px; flex-wrap: nowrap; }
+    .chain-chip {
+      flex: 0 0 auto;
+      font-size: 12px; font-weight: 700; padding: 5px 9px;
+      border-radius: 8px; border: 1px solid var(--border);
+      background: var(--surface); white-space: nowrap;
+    }
+    .chain-chip.me { border-color: var(--accent); color: var(--accent); }
+    .chain-chip.ai { border-color: var(--accent-3); color: var(--accent-3); }
+
+    /* candidate buttons */
+    .cands-label {
+      font-size: 12px; color: var(--text-mute); font-weight: 700;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .cands-label .tag {
+      font-size: 10px; padding: 2px 8px; border-radius: 999px;
+      background: var(--surface-2); border: 1px solid var(--border); color: var(--text-dim);
+    }
+    .cands {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+    }
+    .cand {
+      height: 40px; border-radius: 10px; border: 1px solid var(--border);
+      background: var(--surface); color: var(--text);
+      font-size: 16px; font-weight: 800; letter-spacing: 3px;
+      cursor: pointer; transition: transform .12s ease, background .18s ease, border-color .18s ease;
+      touch-action: manipulation;
+    }
+    .cand:active { transform: scale(.95); }
+    .cand:hover { background: var(--surface-2); }
+    .cand.hinted { border-color: var(--warn); box-shadow: 0 0 0 2px rgba(251,191,36,.35); }
+    .cands.empty { grid-template-columns: 1fr; }
+    .cands-empty {
+      font-size: 13px; color: var(--text-mute); text-align: center; padding: 10px;
+    }
+
+    /* input row */
+    .input-row {
+      display: flex; gap: 8px; align-items: stretch;
+    }
+    .input-row input {
+      flex: 1; min-width: 0; height: 44px;
+      border-radius: 12px; border: 1px solid var(--border);
+      background: var(--surface); color: var(--text);
+      font-size: 18px; font-weight: 700; letter-spacing: 4px; text-align: center;
+      padding: 0 10px; outline: none;
+      transition: border-color .18s ease, box-shadow .18s ease;
+    }
+    .input-row input::placeholder { color: var(--text-mute); letter-spacing: 1px; font-weight: 500; }
+    .input-row input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(139,92,246,.25); }
+    .input-row .btn { height: 44px; padding: 0 16px; }
+
+    .action-row { margin-top: 4px; }
+    .btn:disabled { opacity: .4; cursor: not-allowed; }
+
+    .hint { margin: 0; }
+    .think {
+      font-size: 12px; font-weight: 700; color: var(--accent-3);
+      display: inline-flex; align-items: center; gap: 6px;
+    }
+    .think[hidden] { display: none !important; }
+    .think::after {
+      content: ""; width: 6px; height: 6px; border-radius: 50%;
+      background: var(--accent-3); animation: blink 1s ease-in-out infinite;
+    }
+    @keyframes blink { 0%,100% { opacity: .3; } 50% { opacity: 1; } }
+  </style>
+</head>
+<body>
+  <div class="game-shell">
+    <div class="game-topbar">
+      <a class="back" href="/" aria-label="返回游戏大厅">‹</a>
+      <div class="title">成语接龙<small>末字接首字 · 人机对战</small></div>
+      <div class="stats">
+        <div class="stat" data-stat="streak"><span class="k">连胜</span><span class="v" id="streak-v">0</span></div>
+        <div class="stat" data-stat="score"><span class="k">得分</span><span class="v accent" id="score-v">0</span></div>
+      </div>
+      <button class="icon-btn" id="theme" aria-label="切换主题">◐</button>
+      <button class="icon-btn" id="help" aria-label="规则">?</button>
+    </div>
+
+    <div class="game-stage">
+      <div class="game-board">
+        <!-- current head idiom -->
+        <div class="head-card" id="head-card">
+          <div class="label">当前成语<span class="who" id="who"></span></div>
+          <div class="head-word" id="head-word"></div>
+          <div class="head-py" id="head-py"></div>
+        </div>
+
+        <!-- chain history -->
+        <div class="chain-strip">
+          <div class="chips" id="chips"></div>
+        </div>
+
+        <!-- candidates -->
+        <div>
+          <div class="cands-label">
+            <span>候选成语</span>
+            <span class="tag" id="match-tag">同字</span>
+            <span class="think" id="think" hidden>AI 思考中</span>
+          </div>
+          <div class="cands" id="cands" style="margin-top:8px"></div>
+        </div>
+
+        <!-- input -->
+        <div class="input-row">
+          <input id="inp" type="text" autocomplete="off" autocapitalize="off"
+                 autocorrect="off" spellcheck="false" maxlength="4"
+                 placeholder="输入四字成语" lang="zh" inputmode="text">
+          <button class="btn primary" id="submit">接龙</button>
+        </div>
+
+        <!-- actions -->
+        <div class="action-row">
+          <button class="btn sm" id="hint-btn">提示 −3</button>
+          <button class="btn sm" id="skip-btn">跳过 −5</button>
+          <button class="btn sm ghost" id="end-btn">结束并记录</button>
+          <button class="btn sm ghost" id="restart-btn">重开</button>
+        </div>
+
+        <p class="hint" id="hint-line">尾字 <b style="color:var(--accent-2)">高亮</b> 即接龙起点；同字优先，无同字时可用同音字。</p>
+      </div>
+    </div>
+  </div>
+
+  <script src="/assets/game.js"></script>
+  <script>
+  (function () {
+    "use strict";
+
+    /* ============================================================
+       成语库（200+ 常用四字成语，含拼音用于同音校验）
+       pinyin 为轻声无调音节，空格分四字；接龙取首/末音节比对。
+       ============================================================ */
+    const IDIOMS = [
+      ["一帆风顺","yi fan feng shun"],["一鸣惊人","yi ming jing ren"],
+      ["一举两得","yi ju liang de"],["一视同仁","yi shi tong ren"],
+      ["一丝不苟","yi si bu gou"],["一往无前","yi wang wu qian"],
+      ["一心一意","yi xin yi yi"],["一意孤行","yi yi gu xing"],
+      ["一针见血","yi zhen jian xue"],["一诺千金","yi nuo qian jin"],
+      ["一败涂地","yi bai tu di"],["一本正经","yi ben zheng jing"],
+      ["一表人才","yi biao ren cai"],["一步登天","yi bu deng tian"],
+      ["一筹莫展","yi chou mo zhan"],["一刀两断","yi dao liang duan"],
+      ["一鼓作气","yi gu zuo qi"],["一呼百应","yi hu bai ying"],
+      ["一见钟情","yi jian zhong qing"],["一举成名","yi ju cheng ming"],
+      ["一览无余","yi lan wu yu"],["一落千丈","yi luo qian zhang"],
+      ["一马当先","yi ma dang xian"],["一马平川","yi ma ping chuan"],
+      ["一毛不拔","yi mao bu ba"],["一目了然","yi mu liao ran"],
+      ["一贫如洗","yi pin ru xi"],["一气呵成","yi qi he cheng"],
+      ["一穷二白","yi qiong er bai"],["一日千里","yi ri qian li"],
+      ["一如既往","yi ru ji wang"],["一身是胆","yi shen shi dan"],
+      ["一事无成","yi shi wu cheng"],["一塌糊涂","yi ta hu tu"],
+      ["一网打尽","yi wang da jin"],["一文不值","yi wen bu zhi"],
+      ["一无所有","yi wu suo you"],["一言为定","yi yan wei ding"],
+      ["一知半解","yi zhi ban jie"],["一蹶不振","yi jue bu zhen"],
+      ["二话不说","er hua bu shuo"],["三心二意","san xin er yi"],
+      ["三长两短","san chang liang duan"],["三番五次","san fan wu ci"],
+      ["三顾茅庐","san gu mao lu"],["三教九流","san jiao jiu liu"],
+      ["三生有幸","san sheng you xing"],["四面楚歌","si mian chu ge"],
+      ["四海为家","si hai wei jia"],["四分五裂","si fen wu lie"],
+      ["五光十色","wu guang shi se"],["五花八门","wu hua ba men"],
+      ["五体投地","wu ti tou di"],["六神无主","liu shen wu zhu"],
+      ["七上八下","qi shang ba xia"],["七嘴八舌","qi zui ba she"],
+      ["七拼八凑","qi pin ba cou"],["八面玲珑","ba mian ling long"],
+      ["九牛一毛","jiu niu yi mao"],["九死一生","jiu si yi sheng"],
+      ["九霄云外","jiu xiao yun wai"],["十全十美","shi quan shi mei"],
+      ["十拿九稳","shi na jiu wen"],["百发百中","bai fa bai zhong"],
+      ["百依百顺","bai yi bai shun"],["百家争鸣","bai jia zheng ming"],
+      ["千军万马","qian jun wan ma"],["千方百计","qian fang bai ji"],
+      ["千变万化","qian bian wan hua"],["千言万语","qian yan wan yu"],
+      ["千山万水","qian shan wan shui"],["万水千山","wan shui qian shan"],
+      ["万无一失","wan wu yi shi"],["万众一心","wan zhong yi xin"],
+      ["万象更新","wan xiang geng xin"],["胸有成竹","xiong you cheng zhu"],
+      ["胸无点墨","xiong wu dian mo"],["心安理得","xin an li de"],
+      ["心花怒放","xin hua nu fang"],["心急如焚","xin ji ru fen"],
+      ["心旷神怡","xin kuang shen yi"],["心领神会","xin ling shen hui"],
+      ["心平气和","xin ping qi he"],["心直口快","xin zhi kou kuai"],
+      ["心甘情愿","xin gan qing yuan"],["诚心诚意","cheng xin cheng yi"],
+      ["目瞪口呆","mu deng kou dai"],["目不转睛","mu bu zhuan jing"],
+      ["目中无人","mu zhong wu ren"],["耳目一新","er mu yi xin"],
+      ["口是心非","kou shi xin fei"],["口若悬河","kou ruo xuan he"],
+      ["津津有味","jin jin you wei"],["滔滔不绝","tao tao bu jue"],
+      ["侃侃而谈","kan kan er tan"],["对答如流","dui da ru liu"],
+      ["对牛弹琴","dui niu tan qin"],["牛刀小试","niu dao xiao shi"],
+      ["九牛二虎","jiu niu er hu"],["虎头蛇尾","hu tou she wei"],
+      ["虎背熊腰","hu bei xiong yao"],["如虎添翼","ru hu tian yi"],
+      ["龙腾虎跃","long teng hu yue"],["龙飞凤舞","long fei feng wu"],
+      ["龙马精神","long ma jing shen"],["车水马龙","che shui ma long"],
+      ["马到成功","ma dao cheng gong"],["马不停蹄","ma bu ting ti"],
+      ["人仰马翻","ren yang ma fan"],["千钧一发","qian jun yi fa"],
+      ["发奋图强","fa fen tu qiang"],["发号施令","fa hao shi ling"],
+      ["令人发指","ling ren fa zhi"],["指鹿为马","zhi lu wei ma"],
+      ["鹿死谁手","lu si shui shou"],["手到病除","shou dao bing chu"],
+      ["手忙脚乱","shou mang jiao luan"],["手舞足蹈","shou wu zu dao"],
+      ["足智多谋","zu zhi duo mou"],["情同手足","qing tong shou zu"],
+      ["情深似海","qing shen si hai"],["海阔天空","hai kuo tian kong"],
+      ["海纳百川","hai na bai chuan"],["石沉大海","shi chen da hai"],
+      ["水滴石穿","shui di shi chuan"],["滴水不漏","di shui bu lou"],
+      ["地动山摇","di dong shan yao"],["山清水秀","shan qing shui xiu"],
+      ["山穷水尽","shan qiong shui jin"],["尽善尽美","jin shan jin mei"],
+      ["尽如人意","jin ru ren yi"],["美中不足","mei zhong bu zu"],
+      ["十全十美","shi quan shi mei"],["完美无缺","wan mei wu que"],
+      ["缺一不可","que yi bu ke"],["可圈可点","ke quan ke dian"],
+      ["点石成金","dian shi cheng jin"],["金玉良言","jin yu liang yan"],
+      ["金枝玉叶","jin zhi yu ye"],["玉洁冰清","yu jie bing qing"],
+      ["冰清玉洁","bing qing yu jie"],["冰雪聪明","bing xue cong ming"],
+      ["聪明伶俐","cong ming ling li"],["伶牙俐齿","ling ya li chi"],
+      ["唇亡齿寒","chun wang chi han"],["唇红齿白","chun hong chi bai"],
+      ["白手起家","bai shou qi jia"],["白雪皑皑","bai xue ai ai"],
+      ["白日做梦","bai ri zuo meng"],["日理万机","ri li wan ji"],
+      ["日新月异","ri xin yue yi"],["月明星稀","yue ming xing xi"],
+      ["花好月圆","hua hao yue yuan"],["花前月下","hua qian yue xia"],
+      ["花容月貌","hua rong yue mao"],["貌美如花","mao mei ru hua"],
+      ["如花似玉","ru hua si yu"],["如胶似漆","ru jiao si qi"],
+      ["漆黑一团","qi hei yi tuan"],["一团和气","yi tuan he qi"],
+      ["和颜悦色","he yan yue se"],["和风细雨","he feng xi yu"],
+      ["风和日丽","feng he ri li"],["风吹草动","feng chui cao dong"],
+      ["风平浪静","feng ping lang jing"],["风起云涌","feng qi yun yong"],
+      ["云开见日","yun kai jian ri"],["云淡风轻","yun dan feng qing"],
+      ["腾云驾雾","teng yun jia wu"],["雾里看花","wu li kan hua"],
+      ["花团锦簇","hua tuan jin cu"],["锦上添花","jin shang tian hua"],
+      ["锦囊妙计","jin nang miao ji"],["计上心来","ji shang xin lai"],
+      ["将计就计","jiang ji jiu ji"],["计日而待","ji ri er dai"],
+      ["待字闺中","dai zi gui zhong"],["待价而沽","dai jia er gu"],
+      ["沽名钓誉","gu ming diao yu"],["名誉扫地","ming yu sao di"],
+      ["扫地出门","sao di chu men"],["门当户对","men dang hu dui"],
+      ["门庭若市","men ting ruo shi"],["市井之徒","shi jing zhi tu"],
+      ["徒有其名","tu you qi ming"],["名不虚传","ming bu xu chuan"],
+      ["名列前茅","ming lie qian mao"],["名列榜首","ming lie bang shou"],
+      ["首屈一指","shou qu yi zhi"],["首当其冲","shou dang qi chong"],
+      ["冲口而出","chong kou er chu"],["出生入死","chu sheng ru si"],
+      ["出水芙蓉","chu shui fu rong"],["入木三分","ru mu san fen"],
+      ["入乡随俗","ru xiang sui su"],["俗不可耐","su bu ke nai"],
+      ["耐人寻味","nai ren xun wei"],["回味无穷","hui wei wu qiong"],
+      ["无穷无尽","wu qiong wu jin"],["无与伦比","wu yu lun bi"],
+      ["无语凝噎","wu yu ning ye"],["噎废食因","ye fei shi yin"],
+      ["因噎废食","yin ye fei shi"],["因势利导","yin shi li dao"],
+      ["顺水推舟","shun shui tui zhou"],["舟车劳顿","zhou che lao dun"],
+      ["顿开茅塞","dun kai mao se"],["塞翁失马","sai weng shi ma"],
+      ["马首是瞻","ma shou shi zhan"],["瞻前顾后","zhan qian gu hou"],
+      ["前车之鉴","qian che zhi jian"],["前因后果","qian yin hou guo"],
+      ["果不其然","guo bu qi ran"],["理所当然","li suo dang ran"],
+      ["然荻读书","ran di du shu"],["书香门第","shu xiang men di"],
+      ["第次分明","di ci fen ming"],["明察秋毫","ming cha qiu hao"],
+      ["明目张胆","ming mu zhang dan"],["明争暗斗","ming zheng an dou"],
+      ["暗度陈仓","an du chen cang"],["暗无天日","an wu tian ri"],
+      ["日暮途穷","ri mu tu qiong"],["穷途末路","qiong tu mo lu"],
+      ["路不拾遗","lu bu shi yi"],["遗臭万年","yi chou wan nian"],
+      ["年高德劭","nian gao de shao"],["年深日久","nian shen ri jiu"],
+      ["久别重逢","jiu bie chong feng"],["逢凶化吉","feng xiong hua ji"],
+      ["吉人天相","ji ren tian xiang"],["相安无事","xiang an wu shi"],
+      ["相貌堂堂","xiang mao tang tang"],["堂堂正正","tang tang zheng zheng"],
+      ["正大光明","zheng da guang ming"],["光明磊落","guang ming lei luo"],
+      ["落井下石","luo jing xia shi"],["石破天惊","shi po tian jing"],
+      ["惊天动地","jing tian dong di"],["地久天长","di jiu tian chang"],
+      ["长年累月","chang nian lei yue"],["长治久安","chang zhi jiu an"],
+      ["安居乐业","an ju le ye"],["乐不思蜀","le bu si shu"],
+      ["蜀犬吠日","shu quan fei ri"],["日积月累","ri ji yue lei"],
+      ["累卵之危","lei luan zhi wei"],["危在旦夕","wei zai dan xi"],
+      ["夕惕若厉","xi ti ruo li"],["厉兵秣马","li bing mo ma"],
+      ["马革裹尸","ma ge guo shi"],["尸位素餐","shi wei su can"],
+      ["餐风露宿","can feng lu su"],["宿弊一清","su bi yi qing"],
+      ["清风明月","qing feng ming yue"],["月下老人","yue xia lao ren"],
+      ["人面桃花","ren mian tao hua"],["花香鸟语","hua xiang niao yu"],
+      ["鸟语花香","niao yu hua xiang"],["香消玉殒","xiang xiao yu yun"],
+      ["殒身不恤","yun shen bu xu"],["恤老怜贫","xu lao lian pin"],
+      ["贫贱之交","pin jian zhi jiao"],["交头接耳","jiao tou jie er"],
+      ["耳濡目染","er ru mu ran"],["耳熟能详","er shu neng xiang"],
+      ["详略得当","xiang lve de dang"],["当仁不让","dang ren bu rang"],
+      ["让枣推梨","rang zao tui li"],["梨园弟子","li yuan di zi"],
+      ["子虚乌有","zi xu wu you"],["有口皆碑","you kou jie bei"],
+      ["碑载之功","bei zai zhi gong"],["功败垂成","gong bai chui cheng"],
+      ["成竹在胸","cheng zhu zai xiong"],["成群结队","cheng qun jie dui"],
+      ["对酒当歌","dui jiu dang ge"],["歌功颂德","ge gong song de"],
+      ["德高望重","de gao wang zhong"],["重见天日","zhong jian tian ri"],
+      ["日以继夜","ri yi ji ye"],["夜以继日","ye yi ji ri"],
+      ["夜长梦多","ye chang meng duo"],["多多益善","duo duo yi shan"],
+      ["善始善终","shan shi shan zhong"],["终南捷径","zhong nan jie jing"],
+      ["径情直遂","jing qing zhi sui"],["遂心如意","sui xin ru yi"],
+      ["意气风发","yi qi feng fa"],["发人深省","fa ren shen xing"],
+      ["省吃俭用","sheng chi jian yong"],["用兵如神","yong bing ru shen"],
+      ["神机妙算","shen ji miao suan"],["算无遗策","suan wu yi ce"],
+      ["策马奔腾","ce ma ben teng"],["腾蛟起凤","teng jiao qi feng"],
+      ["凤毛麟角","feng mao lin jiao"],["角立杰出","jiao li jie chu"],
+      ["出奇制胜","chu qi zhi sheng"],["胜败乃兵","sheng bai nai bing"],
+      ["胜友如云","sheng you ru yun"],["云程发轫","yun cheng fa ren"],
+      ["轫致千里","ren zhi qian li"],["里应外合","li ying wai he"],
+      ["合二为一","he er wei yi"],["一唱一和","yi chang yi he"],
+      ["和衷共济","he zhong gong ji"],["济济一堂","ji ji yi tang"],
+      ["堂皇富丽","tang huang fu li"],["丽藻春葩","li zao chun pa"],
+      ["春华秋实","chun hua qiu shi"],["春意盎然","chun yi ang ran"],
+      ["春风化雨","chun feng hua yu"],["春风得意","chun feng de yi"],
+      ["意乱情迷","yi luan qing mi"],["迷途知返","mi tu zhi fan"],
+      ["返璞归真","fan pu gui zhen"],["真心诚意","zhen xin cheng yi"],
+      ["意气相投","yi qi xiang tou"],["投桃报李","tou tao bao li"],
+      ["李代桃僵","li dai tao jiang"],["僵李代桃","jiang li dai tao"],
+      ["桃李满门","tao li man men"],["门可罗雀","men ke luo que"],
+      ["雀小脏全","que xiao zang quan"],["全心全意","quan xin quan yi"],
+      ["意义深长","yi yi shen chang"],["长篇大论","chang pian da lun"],
+      ["论功行赏","lun gong xing shang"],["赏心悦目","shang xin yue mu"],
+      ["目空一切","mu kong yi qie"],["切中要害","qie zhong yao hai"],
+      ["害群之马","hai qun zhi ma"],["马瘦毛长","ma shou mao chang"],
+      ["长驱直入","chang qu zhi ru"],["入情入理","ru qing ru li"],
+      ["理直气壮","li zhi qi zhuang"],["壮志凌云","zhuang zhi ling yun"],
+      ["云消雾散","yun xiao wu san"],["散兵游勇","san bing you yong"],
+      ["勇往直前","yong wang zhi qian"],["前呼后拥","qian hu hou yong"],
+      ["拥书百城","yong shu bai cheng"],["城狐社鼠","cheng hu she shu"],
+      ["鼠目寸光","shu mu cun guang"],["光明正大","guang ming zheng da"],
+      ["大智若愚","da zhi ruo yu"],["愚公移山","yu gong yi shan"],
+      ["山高水长","shan gao shui chang"],["长吁短叹","chang xu duan tan"],
+      ["叹为观止","tan wei guan zhi"],["止于至善","zhi yu zhi shan"],
+      ["善解人意","shan jie ren yi"],["意马心猿","yi ma xin yuan"],
+      ["猿猴取月","yuan hou qu yue"],["月圆花好","yue yuan hua hao"],
+      ["好大喜功","hao da xi gong"],["功成名就","gong cheng ming jiu"],
+      ["就地取材","jiu di qu cai"],["材大难用","cai da nan yong"],
+      ["用武之地","yong wu zhi di"],["地广人稀","di guang ren xi"],
+      ["稀世之宝","xi shi zhi bao"],["宝山空回","bao shan kong hui"],
+      ["回心转意","hui xin zhuan yi"],["意兴阑珊","yi xing lan shan"],
+      ["珊瑚在网","shan hu zai wang"],["网开一面","wang kai yi mian"],
+      ["面红耳赤","mian hong er chi"],["赤子之心","chi zi zhi xin"],
+      ["心猿意马","xin yuan yi ma"],["马前泼水","ma qian po shui"],
+      ["水落石出","shui luo shi chu"],["出人头地","chu ren tou di"],
+      ["地老天荒","di lao tian huang"],["荒诞不经","huang dan bu jing"],
+      ["经久不息","jing jiu bu xi"],["息息相关","xi xi xiang guan"],
+      ["关山迢递","guan shan tiao di"],["递胜递负","di sheng di fu"],
+      ["负荆请罪","fu jing qing zui"],["罪魁祸首","zui kui huo shou"],
+      ["首尾相应","shou wei xiang ying"],["应付自如","ying fu ru ru"],
+      ["如鱼得水","ru yu de shui"],["水到渠成","shui dao qu cheng"],
+      ["成人之美","cheng ren zhi mei"],["美不胜收","mei bu sheng shou"],
+      ["收回成命","shou hui cheng ming"],["命中注定","ming zhong zhu ding"],
+      ["定国安邦","ding guo an bang"],["邦国之光","bang guo zhi guang"],
+      ["光明如镜","guang ming ru jing"],["镜花水月","jing hua shui yue"],
+      ["月晕而风","yue yun er feng"],["风驰电掣","feng chi dian che"],
+      ["车殆马烦","che dai ma fan"],["烦言碎辞","fan yan sui ci"],
+      ["辞旧迎新","ci jiu ying xin"],["新陈代谢","xin chen dai xie"],
+      ["谢天谢地","xie tian xie di"],["地动山摇","di dong shan yao"],
+      ["摇摇欲坠","yao yao yu zhui"],["坠茵落溷","zhui yin luo hun"],
+      ["魂牵梦萦","hun qian meng ying"],["迎刃而解","ying ren er jie"],
+      ["解甲归田","jie jia gui tian"],["田夫野老","tian fu ye lao"],
+      ["老马识途","lao ma shi tu"],["途穷日暮","tu qiong ri mu"],
+      ["暮鼓晨钟","mu gu chen zhong"],["钟鸣鼎食","zhong ming ding shi"],
+      ["食不果腹","shi bu guo fu"],["腹背受敌","fu bei shou di"],
+      ["敌忾同仇","di kai tong chou"],["愁眉苦脸","chou mei ku lian"],
+      ["脸红脖子","lian hong bo zi"],["子曰诗云","zi yue shi yun"],
+      ["云游四海","yun you si hai"],["海枯石烂","hai ku shi lan"],
+      ["烂醉如泥","lan zui ru ni"],["泥牛入海","niu ru hai"],
+      ["海誓山盟","hai shi shan meng"],["梦笔生花","meng bi sheng hua"],
+      ["花言巧语","hua yan qiao yu"],["语重心长","yu zhong xin chang"],
+      ["长袖善舞","chang xiu shan wu"],["舞文弄墨","wu wen nong mo"],
+      ["墨守成规","mo shou cheng gui"],["规行矩步","gui xing ju bu"],
+      ["步步为营","bu bu wei ying"],["营私舞弊","ying si wu bi"],
+      ["弊绝风清","bi jue feng qing"],["清心寡欲","qing xin gua yu"],
+      ["欲盖弥彰","yu gai mi zhang"],["彰善瘅恶","zhang shan dan e"],
+      ["恶贯满盈","e guan man ying"],["盈盈一水","ying ying yi shui"],
+      ["水火无情","shui huo wu qing"],["情投意合","qing tou yi he"],
+      ["合情合理","he qing he li"],["理屈词穷","li qu ci qiong"],
+      ["穷源朔流","qiong yuan shuo liu"],["流芳百世","liu fang bai shi"],
+      ["世外桃源","shi wai tao yuan"],["源远流长","yuan yuan liu chang"],
+      ["长辔远驭","chang pei yuan yu"],["驭凤骖鹤","yu feng can he"],
+      ["鹤发童颜","he fa tong yan"],["颜筋柳骨","yan jin liu gu"],
+      ["骨肉相连","gu rou xiang lian"],["连篇累牍","lian pian lei du"],
+      ["读书破万","du shu po wan"],["万古长青","wan gu chang qing"],
+      ["青出于蓝","qing chu yu lan"],["蓝田生玉","lan tian sheng yu"],
+      ["玉碎瓦全","yu sui wa quan"],["全神贯注","quan shen guan zhu"],
+      ["注玄尚白","zhu xuan shang bai"],["白发苍苍","bai fa cang cang"],
+      ["苍翠欲滴","cang cui yu di"],["滴水不漏","di shui bu lou"],
+      ["漏网之鱼","lou wang zhi yu"],["鱼龙混杂","yu long hun za"],
+      ["杂乱无章","za luan wu zhang"],["章台杨柳","zhang tai yang liu"],
+      ["柳暗花明","liu an hua ming"],["明哲保身","ming zhe bao shen"],
+      ["身经百战","shen jing bai zhan"],["战天斗地","zhan tian dou di"],
+      ["地覆天翻","di fu tian fan"],["翻天覆地","fan tian fu di"],
+      ["地老天荒","di lao tian huang"],["荒时暴月","huang shi bao yue"],
+      ["月白风清","yue bai feng qing"],["清风峻节","qing feng jun jie"],
+      ["节外生枝","jie wai sheng zhi"],["枝繁叶茂","zhi fan ye mao"],
+      ["茂林修竹","mao lin xiu zhu"],["竹报平安","zhu bao ping an"],
+      ["安步当车","an bu dang che"],["车水马龙","che shui ma long"],
+      ["龙争虎斗","long zheng hu dou"],["斗志昂扬","dou zhi ang yang"],
+      ["扬眉吐气","yang mei tu qi"],["气象万千","qi xiang wan qian"],
+      ["千钧一发","qian jun yi fa"],["发愤忘食","fa fen wang shi"],
+      ["食言而肥","shi yan er fei"],["肥马轻裘","fei ma qing qiu"],
+      ["裘弊金尽","qiu bi jin jin"],["尽忠报国","jin zhong bao guo"],
+      ["国泰民安","guo tai min an"],["安居乐业","an ju le ye"],
+      ["业精于勤","ye jing yu qin"],["勤能补拙","qin neng bu zhuo"],
+      ["拙口钝腮","zhuo kou dun sai"],["腮凝新荔","sai ning xin li"],
+      ["李下瓜田","li xia gua tian"],["田连阡陌","tian lian qian mo"],
+      ["陌路相逢","mo lu xiang feng"],["逢场作戏","feng chang zuo xi"],
+      ["戏假情真","xi jia qing zhen"],["真金不怕","zhen jin bu pa"],
+      ["怕硬欺软","pa ying qi ruan"],["软弱无力","ruan ruo wu li"],
+      ["力不从心","li bu cong xin"],["心有余悸","xin you yu ji"],
+      ["既往不咎","ji wang bu jiu"],["咎由自取","jiu you zi qu"],
+      ["取长补短","qu chang bu duan"],["短小精悍","duan xiao jing han"],
+      ["汗马功劳","han ma gong lao"],["劳苦功高","lao ku gong gao"],
+      ["高瞻远瞩","gao zhan yuan zhu"],["瞩目而视","zhu mu er shi"],
+      ["视死如归","shi si ru gui"],["归心似箭","gui xin si jian"],
+      ["箭在弦上","jian zai xian shang"],["上下其手","shang xia qi shou"],
+      ["手不释卷","shou bu shi juan"],["卷土重来","juan tu chong lai"],
+      ["来历不明","lai li bu ming"],["明火执仗","ming huo zhi zhang"],
+      ["仗势欺人","zhang shi qi ren"],["人山人海","ren shan ren hai"],
+      ["海面波澜","hai mian bo lan"],["澜倒波随","lan dao bo sui"],
+      ["随波逐流","sui bo zhu liu"],["流离失所","liu li shi suo"],
+      ["所向披靡","suo xiang pi mi"],["靡靡之音","mi mi zhi yin"],
+      ["音容笑貌","yin rong xiao mao"],["貌合神离","mao he shen li"],
+      ["离经叛道","li jing pan dao"],["道听途说","dao ting tu shuo"],
+      ["说三道四","shuo san dao si"],["四通八达","si tong ba da"],
+      ["达官贵人","da guan gui ren"],["人微言轻","ren wei yan qing"],
+      ["轻重倒置","qing zhong dao zhi"],["置之不理","zhi zhi bu li"],
+      ["理直气壮","li zhi qi zhuang"],["壮气吞牛","zhuang qi tun niu"],
+      ["牛鬼蛇神","niu gui she shen"],["神出鬼没","shen chu gui mo"],
+      ["没齿难忘","mo chi nan wang"],["忘恩负义","wang en fu yi"],
+      ["义不容辞","yi bu rong ci"],["辞严义正","ci yan yi zheng"],
+      ["正本清源","zheng ben qing yuan"],["源清流洁","yuan qing liu jie"],
+      ["洁身自好","jie shen zi hao"],["好逸恶劳","hao yi wu lao"],
+      ["劳师动众","lao shi dong zhong"],["众志成城","zhong zhi cheng cheng"],
+      ["城下之盟","cheng xia zhi meng"],["盟山誓海","meng shan shi hai"],
+      ["海纳百川","hai na bai chuan"],["川流不息","chuan liu bu xi"],
+      ["息事宁人","xi shi ning ren"],["人定胜天","ren ding sheng tian"],
+      ["天经地义","tian jing di yi"],["义无反顾","yi wu fan gu"],
+      ["顾全大局","gu quan da ju"],["局促不安","ju cu bu an"],
+      ["安分守己","an fen shou ji"],["己溺己饥","ji ni ji ji"],
+      ["饥寒交迫","ji han jiao po"],["迫不得已","po bu de yi"],
+      ["已售待购","yi shou dai gou"],["购销两旺","gou xiao liang wang"],
+      ["忘乎所以","wang hu suo yi"],["以理服人","yi li fu ren"],
+      ["人面兽心","ren mian shou xin"],["心惊胆战","xin jing dan zhan"],
+      ["战火纷飞","zhan huo fen fei"],["飞黄腾达","fei huang teng da"],
+      ["达观知命","da guan zhi ming"],["命途多舛","ming tu duo chuan"],
+      ["舛讹百出","chuan e bai chu"],["出神入化","chu shen ru hua"],
+      ["化险为夷","hua xian wei yi"],["夷然自若","yi ran zi ruo"],
+      ["若有所思","ruo you suo si"],["思前想后","si qian xiang hou"],
+      ["后继有人","hou ji you ren"],["人才济济","ren cai ji ji"],
+      ["济世之才","ji shi zhi cai"],["才高八斗","cai gao ba dou"],
+      ["斗酒百篇","dou jiu bai pian"],["篇籍浩如","pian ji hao ru"],
+      ["如释重负","ru shi zhong fu"],["负重致远","fu zhong zhi yuan"],
+      ["远走高飞","yuan zou gao fei"],["飞蛾扑火","fei e pu huo"],
+      ["火上浇油","huo shang jiao you"],["油然而生","you ran er sheng"],
+      ["生龙活虎","sheng long huo hu"],["虎穴龙潭","hu xue long tan"],
+      ["潭水深千","tan shui shen qian"],["千载难逢","qian zai nan feng"],
+      ["逢凶化吉","feng xiong hua ji"],["吉星高照","ji xing gao zhao"],
+      ["照猫画虎","zhao mao hua hu"],["虎视眈眈","hu shi dan dan"],
+      ["丹心一片","dan xin yi pian"],["片言只语","pian yan zhi yu"],
+      ["语焉不详","yu yan bu xiang"],["详刑慎罚","xiang xing shen fa"],
+      ["罚不当罪","fa bu dang zui"],["罪该万死","zui gai wan si"],
+      ["死里逃生","si li tao sheng"],["生离死别","sheng li si bie"],
+      ["别有天地","bie you tian di"],["地平天成","di ping tian cheng"],
+      ["成人之美","cheng ren zhi mei"],["美如冠玉","mei ru guan yu"],
+      ["玉石俱焚","yu shi ju fen"],["焚膏继晷","fen gao ji gui"],
+      ["晷刻之间","gui ke zhi jian"],["间不容发","jian bu rong fa"],
+      ["发奋图强","fa fen tu qiang"],["强词夺理","qiang ci duo li"],
+      ["理不胜词","li bu sheng ci"],["词不达意","ci bu da yi"],
+      ["意满志得","yi man zhi de"],["得陇望蜀","de long wang shu"],
+      ["蜀中无将","shu zhong wu jiang"],["将错就错","jiang cuo jiu cuo"],
+      ["错综复杂","cuo zong fu za"],["杂七杂八","za qi za ba"],
+      ["八仙过海","ba xian guo hai"],["海阔天空","hai kuo tian kong"],
+      ["空谷传声","kong gu chuan sheng"],["声东击西","sheng dong ji xi"],
+      ["西窗剪烛","xi chuang jian zhu"],["烛照数计","zhu zhao shu ji"],
+      ["计功受赏","ji gong shou shang"],["赏罚分明","shang fa fen ming"],
+      ["明镜高悬","ming jing gao xuan"],["悬崖勒马","xuan ya le ma"],
+      ["马首是瞻","ma shou shi zhan"],["瞻前顾后","zhan qian gu hou"],
+      ["后来居上","hou lai ju shang"],["上下同心","shang xia tong xin"],
+      ["心心相印","xin xin xiang yin"],["印累绶若","yin lei shou ruo"],
+      ["若即若离","ruo ji ruo li"],["离题万里","li ti wan li"],
+      ["里外夹攻","li wai jia gong"],["攻其不备","gong qi bu bei"],
+      ["备尝艰苦","bei chang jian ku"],["苦尽甘来","ku jin gan lai"],
+      ["来日方长","lai ri fang chang"],["长此以往","chang ci yi wang"],
+      ["往返徒劳","wang fan tu lao"],["劳民伤财","lao min shang cai"],
+      ["财大气粗","cai da qi cu"],["粗中有细","cu zhong you xi"],
+      ["细微末节","xi wei mo jie"],["节用裕民","jie yong yu min"],
+      ["民富国强","min fu guo qiang"],["强本弱枝","qiang ben ruo zhi"],
+      ["枝叶扶疏","zhi ye fu shu"],["疏而不漏","shu er bu lou"],
+      ["漏脯充饥","lou pu chong ji"],["饥不择食","ji bu ze shi"],
+      ["食前方丈","shi qian fang zhang"],["丈二和尚","zhang er he shang"],
+      ["尚虚中馈","shang xu zhong kui"],["馈贫之粮","kui pin zhi liang"],
+      ["粮尽援绝","liang jin yuan jue"],["绝处逢生","jue chu feng sheng"],
+      ["生死攸关","sheng si you guan"],["关怀备至","guan huai bei zhi"],
+      ["至理名言","zhi li ming yan"],["言简意赅","yan jian yi gai"],
+      ["改过自新","gai guo zi xin"],["新陈代谢","xin chen dai xie"],
+      ["谢家宝树","xie jia bao shu"],["树大招风","shu da zhao feng"],
+      ["风卷残云","feng juan can yun"],["云泥之别","yun ni zhi bie"],
+      ["别开生面","bie kai sheng mian"],["面目全非","mian mu quan fei"],
+      ["非同小可","fei tong xiao ke"],["可乘之机","ke cheng zhi ji"],
+      ["机不可失","ji bu ke shi"],["失之交臂","shi zhi jiao bi"],
+      ["臂膊相连","bi bo xiang lian"],["连城之价","lian cheng zhi jia"],
+      ["价廉物美","jia lian wu mei"],["美意延年","mei yi yan nian"],
+      ["年事已高","nian shi yi gao"],["高谈阔论","gao tan kuo lun"],
+      ["论今说古","lun jin shuo gu"],["古往今来","gu wang jin lai"],
+      ["来者不拒","lai zhe bu ju"],["拒谏饰非","ju jian shi fei"],
+      ["非亲非故","fei qin fei gu"],["故步自封","gu bu zi feng"],
+      ["封妻荫子","feng qi yin zi"],["子承父业","zi cheng fu ye"],
+      ["业峻鸿绩","ye jun hong ji"],["绩学之士","ji xue zhi shi"],
+      ["士别三日","shi bie san ri"],["日上三竿","ri shang san gan"],
+      ["竿头日上","gan tou ri shang"],["上下交困","shang xia jiao kun"],
+      ["困兽犹斗","kun shou you dou"],["斗转星移","dou zhuan xing yi"],
+      ["移花接木","yi hua jie mu"],["木已成舟","mu yi cheng zhou"],
+      ["舟中敌国","zhou zhong di guo"],["国泰民安","guo tai min an"],
+      ["安之若素","an zhi ruo su"],["素昧平生","su mei ping sheng"],
+      ["生灵涂炭","sheng ling tu tan"],["炭贱伤农","tan jian shang nong"],
+      ["农怨沸天","nong yuan fei tian"],["天罗地网","tian luo di wang"],
+      ["网漏吞舟","wang lou tun zhou"],["舟水之喻","zhou shui zhi yu"]
+    ].map(([w, p]) => ({ w, p: p.split(" ") }));
+
+    /* build indices: by first char, by first pinyin syllable */
+    const byChar = Object.create(null);
+    const byPy = Object.create(null);
+    IDIOMS.forEach(it => {
+      const c = it.w[0];
+      const s = it.p[0];
+      (byChar[c] || (byChar[c] = [])).push(it);
+      (byPy[s] || (byPy[s] = [])).push(it);
+    });
+
+    /* homophone map: group pinyin syllables that sound identical toneless.
+       We stored toneless already, so identity is direct string equality. */
+    function pyMatch(a, b) { return a === b; }
+
+    /* ============================================================
+       Game state
+       ============================================================ */
+    const state = {
+      chain: [],        // [{w, p, by}]  by = "ai" | "me" | "sys"
+      used: new Set(),
+      score: 0,
+      streak: 0,
+      best: SG.best("idiom", 0),
+      head: null,       // current head idiom to follow
+      hintIdx: -1,
+      busy: false
+    };
+
+    const $ = id => document.getElementById(id);
+    const elHead = $("head-word"), elPy = $("head-py"), elWho = $("who");
+    const elCard = $("head-card"), elChips = $("chips"), elCands = $("cands");
+    const elTag = $("match-tag"), elThink = $("think");
+    const elInp = $("inp"), elSubmit = $("submit");
+    const elScore = $("score-v"), elStreak = $("streak-v");
+
+    /* ---------- helpers ---------- */
+    function tailOf(it) { return { ch: it.w[3], py: it.p[3] }; }
+    function headOf(it) { return { ch: it.w[0], py: it.p[0] }; }
+
+    function follows(prev, next) {
+      // same char beats same pinyin; accept either
+      const t = tailOf(prev), h = headOf(next);
+      if (t.ch === h.ch) return "same";      // exact same character
+      if (pyMatch(t.py, h.py)) return "py";  // same pinyin (homophone)
+      return false;
+    }
+
+    function pickRandom(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
+    function candidatesFor(tail) {
+      // same-char first
+      const same = (byChar[tail.ch] || []).filter(it => !state.used.has(it.w));
+      const py = (byPy[tail.py] || []).filter(it => !state.used.has(it.w) && it.w[0] !== tail.ch);
+      return { same, py };
+    }
+
+    function aiFind(tail) {
+      const { same, py } = candidatesFor(tail);
+      const pool = same.length ? same : py;
+      return pool.length ? pickRandom(pool) : null;
+    }
+
+    /* ---------- render ---------- */
+    function renderHead() {
+      const it = state.head;
+      const tail = tailOf(it);
+      // highlight last char
+      elHead.innerHTML = it.w.split("").map((c, i) =>
+        i === 3 ? `<span class="tail">${c}</span>` : c
+      ).join("");
+      elPy.textContent = it.p.join(" ");
+      const last = state.chain[state.chain.length - 1];
+      const by = last ? last.by : "sys";
+      elWho.textContent = by === "me" ? "· 你出的" : by === "ai" ? "· AI 出的" : "· 起点";
+      elCard.classList.remove("shake");
+    }
+
+    function renderChips() {
+      const items = state.chain.slice(-8);
+      elChips.innerHTML = items.map(it =>
+        `<span class="chain-chip ${it.by}">${it.w}</span>`
+      ).join("");
+      // scroll to end
+      const strip = elChips.parentElement;
+      strip.scrollLeft = strip.scrollWidth;
+    }
+
+    function renderCands() {
+      const tail = tailOf(state.head);
+      const { same, py } = candidatesFor(tail);
+      const useSame = same.length > 0;
+      const list = useSame ? same : py;
+      elTag.textContent = useSame ? "同字" : "同音";
+      elCands.classList.toggle("empty", list.length === 0);
+      if (!list.length) {
+        elCands.innerHTML = `<div class="cands-empty">库中暂无可用候选，请直接输入或跳过</div>`;
+        return;
+      }
+      const shown = list.slice(0, 6);
+      elCands.innerHTML = shown.map((it, i) =>
+        `<button class="cand${i === state.hintIdx ? " hinted" : ""}" data-w="${it.w}">${it.w}</button>`
+      ).join("");
+    }
+
+    function renderStats() {
+      elScore.textContent = state.score;
+      elStreak.textContent = state.streak;
+    }
+
+    function renderAll() {
+      renderHead(); renderChips(); renderCands(); renderStats();
+    }
+
+    /* ---------- flow ---------- */
+    function startGame(seedPick = true) {
+      state.chain = [];
+      state.used = new Set();
+      state.score = 0;
+      state.streak = 0;
+      state.hintIdx = -1;
+      state.busy = false;
+      // pick a random starter
+      const starter = pickRandom(IDIOMS);
+      state.used.add(starter.w);
+      state.head = starter;
+      state.chain.push({ ...starter, by: "sys" });
+      renderAll();
+      elInp.value = "";
+      elInp.focus();
+    }
+
+    function addScore(n) {
+      state.score += n;
+      if (state.score < 0) state.score = 0;
+      renderStats();
+    }
+
+    function playerSubmit(raw) {
+      if (state.busy) return;
+      const w = (raw || "").trim();
+      if (w.length !== 4) { shake(); SG.toast("请输入四字成语"); return; }
+      const it = IDIOMS.find(x => x.w === w);
+      if (!it) { shake(); SG.toast("库中没有这个成语"); return; }
+      if (state.used.has(it.w)) { shake(); SG.toast("这个成语已用过"); return; }
+      const ok = follows(state.head, it);
+      if (!ok) {
+        shake();
+        const t = tailOf(state.head);
+        SG.toast(`应以「${t.ch}」或同音字开头`);
+        return;
+      }
+      // valid
+      state.used.add(it.w);
+      const gain = 10 + state.streak * 2;
+      addScore(gain);
+      state.streak++;
+      state.chain.push({ ...it, by: "me" });
+      state.head = it;
+      state.hintIdx = -1;
+      elInp.value = "";
+      navigator.vibrate?.(30);
+      renderAll();
+      // AI turn
+      aiTurn();
+    }
+
+    function aiTurn() {
+      state.busy = true;
+      elThink.hidden = false;
+      setTimeout(() => {
+        elThink.hidden = true;
+        const tail = tailOf(state.head);
+        const ai = aiFind(tail);
+        if (!ai) {
+          // AI cannot接 — bonus to player, stays player's turn
+          addScore(20);
+          state.streak++;
+          SG.toast("AI 接不上！奖励 +20", 1800);
+          navigator.vibrate?.([20, 40, 20]);
+          renderStats();
+          renderCands();
+          state.busy = false;
+          elInp.focus();
+          return;
+        }
+        state.used.add(ai.w);
+        state.chain.push({ ...ai, by: "ai" });
+        state.head = ai;
+        renderAll();
+        state.busy = false;
+        elInp.focus();
+      }, 650 + Math.random() * 350);
+    }
+
+    function doSkip() {
+      if (state.busy) return;
+      addScore(-5);
+      state.streak = 0;
+      SG.toast("跳过 −5，连胜清零", 1400);
+      navigator.vibrate?.(40);
+      // AI keeps the chain going by itself (plays one), then player continues
+      state.busy = true;
+      elThink.hidden = false;
+      setTimeout(() => {
+        elThink.hidden = true;
+        const tail = tailOf(state.head);
+        let ai = aiFind(tail);
+        if (!ai) {
+          // pick any unused idiom as new head
+          ai = IDIOMS.find(x => !state.used.has(x.w)) || pickRandom(IDIOMS);
+          state.chain.push({ ...ai, by: "sys" });
+        } else {
+          state.used.add(ai.w);
+          state.chain.push({ ...ai, by: "ai" });
+        }
+        state.head = ai;
+        state.hintIdx = -1;
+        renderAll();
+        state.busy = false;
+        elInp.focus();
+      }, 600);
+    }
+
+    function doHint() {
+      if (state.busy) return;
+      const tail = tailOf(state.head);
+      const { same, py } = candidatesFor(tail);
+      const list = same.length ? same : py;
+      if (!list.length) { SG.toast("暂无可提示的候选"); return; }
+      addScore(-3);
+      // pick a candidate index that exists among the shown ones
+      const shown = list.slice(0, 6);
+      const idx = Math.floor(Math.random() * shown.length);
+      state.hintIdx = idx;
+      renderCands();
+      SG.toast("提示 −3", 1200);
+    }
+
+    function shake() {
+      elCard.classList.remove("shake");
+      // force reflow to restart animation
+      void elCard.offsetWidth;
+      elCard.classList.add("shake");
+      navigator.vibrate?.(60);
+    }
+
+    function endGame() {
+      state.best = SG.best("idiom", state.score);
+      const isBest = state.score >= state.best && state.score > 0;
+      SG.overlay({
+        title: "本局结束",
+        body: `本局得分 <b>${state.score}</b>，最高分 <b>${state.best}</b>。<br>` +
+              (isBest ? "🎉 刷新最高分！" : "再来一局挑战自己？"),
+        score: state.score,
+        buttons: [
+          { text: "再开一局", kind: "primary", onClick: () => { ov.hide(); startGame(); } },
+          { text: "关闭", onClick: () => ov.hide() }
+        ]
+      }).show();
+    }
+
+    function showRules() {
+      SG.overlay({
+        title: "成语接龙规则",
+        body: [
+          "玩家与 AI 轮流接龙。每个成语的<b>首字</b>必须接上一个成语的<b>末字</b>。",
+          "<br>• <b>同字</b>优先，库中无同字时可使用<b>同音字</b>（拼音相同）。",
+          "<br>• 可点击下方候选成语，或在输入框输入库中成语后按「接龙」。",
+          "<br>• 成功 +10 分（连胜额外 +2/级）；<b>提示</b> −3；<b>跳过</b> −5 且连胜清零。",
+          "<br>• AI 接不上时奖励 +20 并继续；结束时可记录最高分。"
+        ].join(""),
+        buttons: [{ text: "开始游戏", kind: "primary", onClick: () => ov.hide() }]
+      }).show();
+    }
+
+    /* ---------- events ---------- */
+    elSubmit.addEventListener("click", () => playerSubmit(elInp.value));
+    elInp.addEventListener("keydown", e => {
+      if (e.key === "Enter") { e.preventDefault(); playerSubmit(elInp.value); }
+    });
+    elCands.addEventListener("click", e => {
+      const b = e.target.closest(".cand");
+      if (b) playerSubmit(b.dataset.w);
+    });
+    $("hint-btn").addEventListener("click", doHint);
+    $("skip-btn").addEventListener("click", doSkip);
+    $("end-btn").addEventListener("click", endGame);
+    $("restart-btn").addEventListener("click", () => {
+      SG.overlay({
+        title: "重新开始？",
+        body: "当前得分将清零（未记录最高分）。",
+        buttons: [
+          { text: "确定", kind: "primary", onClick: () => { ov.hide(); startGame(); } },
+          { text: "取消", onClick: () => ov.hide() }
+        ]
+      }).show();
+    });
+    $("help").addEventListener("click", showRules);
+    $("theme").addEventListener("click", () => SG.toggleTheme());
+
+    // prevent double-tap zoom / context menu on buttons
+    document.addEventListener("contextmenu", e => { if (e.target.closest(".cand,.btn")) e.preventDefault(); });
+    let lastTap = 0;
+    document.addEventListener("touchend", e => {
+      const now = Date.now();
+      if (now - lastTap < 300) e.preventDefault();
+      lastTap = now;
+    }, { passive: false });
+
+    /* ---------- boot ---------- */
+    startGame();
+    // show rules on first visit
+    if (!localStorage.getItem("slowpapa-idiom-seen")) {
+      localStorage.setItem("slowpapa-idiom-seen", "1");
+      showRules();
+    }
+  })();
+  </script>
+</body>
+</html>

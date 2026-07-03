@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="description" content="像素鸟 Flappy — 点击/触摸/空格让小鸟向上跳，穿越随机管道间隙得分，撞管道或落地即结束。" />
+<title>像素鸟 Flappy · Slowpapa</title>
+<link rel="stylesheet" href="/assets/game.css" />
+<style>
+  /* ---- 本游戏专属样式 ---- */
+  .flappy-board { padding: 12px; }
+  .flappy-canvas {
+    display: block;
+    width: 100%;
+    height: auto;
+    touch-action: none;
+    border-radius: 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+  }
+  .flappy-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 12px;
+    flex-wrap: wrap;
+  }
+  .flappy-actions { display: flex; gap: 8px; }
+  .flappy-hint {
+    text-align: center;
+    color: var(--text-mute);
+    font-size: 12px;
+    margin-top: 12px;
+  }
+  .flappy-hint .kbd { margin: 0 2px; }
+</style>
+</head>
+<body>
+<div class="game-shell">
+  <div class="game-topbar">
+    <a class="back" href="/" aria-label="返回游戏大厅">‹</a>
+    <div class="title">像素鸟 Flappy<small>点击跳跃·穿越管道</small></div>
+    <div class="stats">
+      <div class="stat" data-stat="score"><span class="k">得分</span><span class="v" id="scoreV">0</span></div>
+      <div class="stat" data-stat="best"><span class="k">最高</span><span class="v accent" id="bestV">0</span></div>
+    </div>
+    <button class="icon-btn" id="themeBtn" aria-label="切换主题">◐</button>
+    <button class="icon-btn" id="helpBtn" aria-label="规则">?</button>
+  </div>
+
+  <div class="game-stage">
+    <div class="game-board flappy-board">
+      <canvas id="cv" class="flappy-canvas"></canvas>
+      <div class="flappy-meta">
+        <div class="chip" id="speedChip">难度 · 平稳</div>
+        <div class="flappy-actions">
+          <button class="btn sm" id="restartBtn">重开</button>
+        </div>
+      </div>
+      <div class="flappy-hint">点击 / 触摸 / <span class="kbd">空格</span> 让小鸟向上跳</div>
+    </div>
+  </div>
+</div>
+
+<script src="/assets/game.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  const KEY = "flappy";
+  const cv = document.getElementById("cv");
+  const ctx = cv.getContext("2d");
+
+  const scoreV = document.getElementById("scoreV");
+  const bestV  = document.getElementById("bestV");
+  const speedChip = document.getElementById("speedChip");
+
+  // ---- 几何 / 尺寸 ----
+  let W = 0, H = 0, DPR = 1;          // CSS 像素
+  let groundY = 0;                    // 地面线 y
+  const BIRD_R = 13;                  // 小鸟半径
+  const BIRD_X = 88;                  // 小鸟固定 x
+  const PIPE_W = 58;                  // 管道宽
+  const GAP = 138;                    // 间隙高度（随难度递减）
+  const GRAVITY = 1500;               // 重力 px/s^2
+  const FLAP_V = -430;                // 跳跃初速 px/s
+  const PIPE_SPACING = 220;           // 管道水平间距（CSS px）
+  const PIPE_SPEED = 150;             // 滚动速度 px/s
+  const GROUND_H = 40;                // 地面厚度
+
+  // ---- 主题颜色 ----
+  let palette = {};
+  function loadPalette() {
+    const cs = getComputedStyle(document.documentElement);
+    const get = (n) => cs.getPropertyValue(n).trim();
+    palette = {
+      text:   get("--text"),
+      dim:    get("--text-dim"),
+      accent: get("--accent"),
+      accent2:get("--accent-2"),
+      accent3:get("--accent-3"),
+      good:   get("--good"),
+      bad:    get("--bad"),
+      warn:   get("--warn"),
+      surface:get("--surface"),
+      border: get("--border"),
+    };
+  }
+
+  // ---- 游戏状态 ----
+  let state = "idle";  // idle | playing | over
+  let score = 0;
+  let best  = SG.best(KEY);
+  let birdY = 0;
+  let birdV = 0;
+  let pipes = [];      // { x, gapY, scored }
+  let lastTime = 0;
+  let bgOffset = 0;    // 背景/地面滚动偏移
+  let flapAnim = 0;    // 翅膀拍动动画相位
+  let birdRot = 0;    // 小鸟旋转角
+  let started = false; // 是否已开始过（用于首跳启动）
+  let shakeT = 0;      // 撞击震屏剩余时间
+  let flashT = 0;      // 得分闪光
+
+  bestV.textContent = best;
+
+  // ---- 难度 ----
+  function difficulty() {
+    // 每过 5 分略微加难：间隙收窄、速度加快
+    const tier = Math.floor(score / 5);
+    const gap = Math.max(108, GAP - tier * 6);
+    const speed = Math.min(260, PIPE_SPEED + tier * 12);
+    return { gap, speed };
+  }
+  function diffLabel() {
+    const tier = Math.floor(score / 5);
+    if (tier <= 0) return "难度 · 平稳";
+    if (tier <= 2) return "难度 · 稍快";
+    if (tier <= 4) return "难度 · 偏快";
+    if (tier <= 6) return "难度 · 急速";
+    return "难度 · 极速";
+  }
+
+  function newPipe(x) {
+    const { gap } = difficulty();
+    const margin = 50;
+    const topMin = margin;
+    const topMax = Math.max(margin + 1, groundY - gap - margin);
+    const gapY = topMin + Math.random() * (topMax - topMin);
+    return { x, gapY, scored: false };
+  }
+
+  function reset() {
+    birdY = H / 2 - 20;
+    birdV = 0;
+    birdRot = 0;
+    pipes = [];
+    score = 0;
+    bgOffset = 0;
+    shakeT = 0;
+    flashT = 0;
+    started = false;
+    state = "idle";
+    // 预放一根管道在屏外
+    pipes.push(newPipe(W + 40));
+    updateHUD();
+  }
+
+  function updateHUD() {
+    scoreV.textContent = score;
+    bestV.textContent  = best;
+    speedChip.textContent = diffLabel();
+  }
+
+  function startGame() {
+    if (state !== "idle") return;
+    state = "playing";
+    started = true;
+  }
+
+  function flap() {
+    if (state === "over") return;
+    if (state === "idle") startGame();
+    birdV = FLAP_V;
+    flapAnim = 1; // 触发拍翅
+    if (navigator.vibrate) navigator.vibrate(8);
+  }
+
+  function gameOver() {
+    if (state === "over") return;
+    state = "over";
+    shakeT = 0.32;
+    if (SG.best(KEY, score) > best) best = SG.best(KEY);
+    bestV.textContent = best;
+    if (navigator.vibrate) navigator.vibrate([20, 60, 20, 60, 20]);
+    const ov = SG.overlay({
+      title: score >= best && score > 0 ? "新纪录！" : "撞上了",
+      body: "最高 " + best + " 分 · 本次 " + score + " 分",
+      score: score,
+      buttons: [
+        { text: "再来一局", kind: "primary", onClick: () => { ov.hide(); reset(); } },
+        { text: "关闭", kind: "", onClick: () => { ov.hide(); } },
+      ],
+    });
+    ov.show();
+  }
+
+  // ---- 尺寸 / DPR ----
+  function resize() {
+    const rect = cv.getBoundingClientRect();
+    const cssW = Math.min(rect.width, 460);
+    const cssH = Math.max(360, Math.min(cssW * 1.5, 640));
+    DPR = window.devicePixelRatio || 1;
+    cv.style.height = cssH + "px";
+    cv.width  = Math.round(cssW * DPR);
+    cv.height = Math.round(cssH * DPR);
+    W = cssW;
+    H = cssH;
+    groundY = H - GROUND_H;
+    loadPalette();
+    if (!started) {
+      birdY = H / 2 - 20;
+    } else {
+      // 保持鸟相对位置
+      birdY = Math.min(birdY, groundY - BIRD_R);
+    }
+  }
+
+  // ---- 渲染 ----
+  function drawBackground() {
+    // 天空渐变
+    const sky = ctx.createLinearGradient(0, 0, 0, groundY);
+    const isLight = document.documentElement.getAttribute("data-theme") === "light";
+    if (isLight) {
+      sky.addColorStop(0, "#bfe3ff");
+      sky.addColorStop(1, "#eaf6ff");
+    } else {
+      sky.addColorStop(0, "#1a2350");
+      sky.addColorStop(1, "#2c2a5e");
+    }
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, W, groundY);
+
+    // 远景山丘（视差）
+    ctx.save();
+    ctx.globalAlpha = isLight ? 0.5 : 0.35;
+    const hillOff = (bgOffset * 0.25) % 200;
+    const hillColor = isLight ? "#cfe6c8" : "#3a3a6e";
+    ctx.fillStyle = hillColor;
+    for (let i = -1; i < Math.ceil(W / 200) + 1; i++) {
+      const hx = i * 200 - hillOff;
+      ctx.beginPath();
+      ctx.arc(hx + 100, groundY, 110, Math.PI, 0);
+      ctx.fill();
+    }
+    ctx.restore();
+
+    // 云朵（更慢视差）
+    ctx.save();
+    ctx.globalAlpha = isLight ? 0.7 : 0.5;
+    const cloudOff = (bgOffset * 0.12) % 260;
+    ctx.fillStyle = "#ffffff";
+    for (let i = -1; i < Math.ceil(W / 260) + 1; i++) {
+      const cxp = i * 260 - cloudOff;
+      drawCloud(cxp + 60, 70, 26);
+      drawCloud(cxp + 180, 130, 18);
+    }
+    ctx.restore();
+  }
+
+  function drawCloud(x, y, r) {
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.arc(x + r, y + 4, r * 0.8, 0, Math.PI * 2);
+    ctx.arc(x - r, y + 4, r * 0.8, 0, Math.PI * 2);
+    ctx.arc(x + r * 0.4, y - r * 0.6, r * 0.7, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawGround() {
+    // 地面带
+    ctx.fillStyle = palette.dim || "#b9b6d8";
+    ctx.fillRect(0, groundY, W, GROUND_H);
+    // 草纹条纹
+    ctx.save();
+    ctx.fillStyle = palette.accent3 || "#38bdf8";
+    ctx.globalAlpha = 0.6;
+    const off = bgOffset % 24;
+    for (let i = -1; i < Math.ceil(W / 24) + 1; i++) {
+      const sx = i * 24 - off;
+      ctx.fillRect(sx, groundY, 12, 6);
+    }
+    ctx.restore();
+    // 地面顶线
+    ctx.fillStyle = palette.border || "rgba(255,255,255,.12)";
+    ctx.fillRect(0, groundY, W, 2);
+  }
+
+  function drawPipe(p) {
+    const { gap } = difficulty();
+    const topH = p.gapY;
+    const botY = p.gapY + gap;
+    const pipeGrad = ctx.createLinearGradient(p.x, 0, p.x + PIPE_W, 0);
+    pipeGrad.addColorStop(0, palette.accent || "#8b5cf6");
+    pipeGrad.addColorStop(0.5, palette.accent2 || "#ec4899");
+    pipeGrad.addColorStop(1, palette.accent || "#8b5cf6");
+    ctx.fillStyle = pipeGrad;
+    ctx.strokeStyle = palette.border || "rgba(255,255,255,.18)";
+    ctx.lineWidth = 2;
+
+    // 上管
+    roundRect(p.x, 0, PIPE_W, topH - 14, 6, true);
+    // 上管口
+    roundRect(p.x - 4, topH - 16, PIPE_W + 8, 16, 5, true);
+    // 下管
+    roundRect(p.x, botY + 14, PIPE_W, groundY - (botY + 14), 6, true);
+    // 下管口
+    roundRect(p.x - 4, botY, PIPE_W + 8, 16, 5, true);
+
+    // 高光
+    ctx.save();
+    ctx.globalAlpha = 0.25;
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(p.x + 6, 0, 6, Math.max(0, topH - 16));
+    ctx.fillRect(p.x + 6, botY + 16, 6, Math.max(0, groundY - (botY + 16)));
+    ctx.restore();
+  }
+
+  function roundRect(x, y, w, h, r, fill) {
+    if (h <= 0 || w <= 0) return;
+    r = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+    if (fill) { ctx.fill(); ctx.stroke(); }
+  }
+
+  function drawBird(now) {
+    const x = BIRD_X;
+    const y = birdY;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(birdRot);
+
+    // 身体
+    const bodyGrad = ctx.createLinearGradient(0, -BIRD_R, 0, BIRD_R);
+    bodyGrad.addColorStop(0, palette.warn || "#fbbf24");
+    bodyGrad.addColorStop(1, "#f59e0b");
+    ctx.fillStyle = bodyGrad;
+    ctx.beginPath();
+    ctx.arc(0, 0, BIRD_R, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = palette.border || "rgba(0,0,0,.2)";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // 翅膀（拍动）
+    const wing = Math.sin(now / 60) * (flapAnim > 0 ? 0.9 : 0.4);
+    ctx.save();
+    ctx.rotate(wing * 0.5);
+    ctx.fillStyle = "#ffffff";
+    ctx.globalAlpha = 0.92;
+    ctx.beginPath();
+    ctx.ellipse(-3, 3, 8, 5, -0.3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    // 眼睛
+    ctx.fillStyle = "#fff";
+    ctx.beginPath();
+    ctx.arc(5, -4, 4.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#1c1635";
+    ctx.beginPath();
+    ctx.arc(6.5, -4, 2.2, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 嘴
+    ctx.fillStyle = "#f97316";
+    ctx.beginPath();
+    ctx.moveTo(10, 0);
+    ctx.lineTo(17, -1.5);
+    ctx.lineTo(17, 2.5);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.restore();
+
+    // 拍翅计时衰减
+    if (flapAnim > 0) flapAnim = Math.max(0, flapAnim - 0.05);
+  }
+
+  function drawScoreNow(now) {
+    if (flashT > 0) {
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, flashT * 3);
+      ctx.fillStyle = palette.good || "#34d399";
+      ctx.font = "800 30px 'PingFang SC', system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("+" + 1, BIRD_X, birdY - 22 - (1 - flashT) * 18);
+      ctx.restore();
+    }
+    if (state === "idle" && !started) {
+      ctx.save();
+      ctx.fillStyle = palette.text || "#fff";
+      ctx.globalAlpha = 0.85;
+      ctx.font = "700 18px 'PingFang SC', system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("点击开始", W / 2, H / 2 - 60);
+      ctx.font = "500 13px 'PingFang SC', system-ui, sans-serif";
+      ctx.fillStyle = palette.dim || "#b9b6d8";
+      ctx.fillText("点击 / 空格 让小鸟跳起", W / 2, H / 2 - 38);
+      ctx.restore();
+    }
+  }
+
+  // ---- 主循环 ----
+  function loop(now) {
+    if (!lastTime) lastTime = now;
+    const dt = Math.min(0.05, (now - lastTime) / 1000);
+    lastTime = now;
+
+    update(dt);
+    render(now);
+    requestAnimationFrame(loop);
+  }
+
+  function update(dt) {
+    const { speed } = difficulty();
+    // 背景在 playing/over 都滚动一点（over 时逐渐停）
+    if (state === "playing") bgOffset += speed * dt;
+    else if (state === "idle") bgOffset += speed * 0.3 * dt;
+
+    if (flashT > 0) flashT = Math.max(0, flashT - dt);
+    if (shakeT > 0) shakeT = Math.max(0, shakeT - dt);
+
+    if (state === "playing") {
+      birdV += GRAVITY * dt;
+      birdY += birdV * dt;
+      // 旋转随速度
+      const target = birdV < 0 ? -0.45 : Math.min(1.2, birdV / 600);
+      birdRot += (target - birdRot) * Math.min(1, dt * 8);
+
+      // 管道移动 + 计分
+      for (const p of pipes) {
+        p.x -= speed * dt;
+        if (!p.scored && p.x + PIPE_W < BIRD_X) {
+          p.scored = true;
+          score += 1;
+          flashT = 0.35;
+          if (SG.best(KEY, score) > best) best = SG.best(KEY);
+          updateHUD();
+        }
+      }
+      // 移除离屏管道
+      pipes = pipes.filter(p => p.x + PIPE_W > -10);
+      // 生成新管道
+      const last = pipes[pipes.length - 1];
+      if (!last || last.x < W - PIPE_SPACING) {
+        pipes.push(newPipe(W + 20));
+      }
+
+      // 碰撞：地面
+      if (birdY + BIRD_R >= groundY) {
+        birdY = groundY - BIRD_R;
+        gameOver();
+      }
+      // 碰撞：顶
+      if (birdY - BIRD_R <= 0) {
+        birdY = BIRD_R;
+        birdV = 0;
+      }
+      // 碰撞：管道
+      const { gap } = difficulty();
+      for (const p of pipes) {
+        if (BIRD_X + BIRD_R > p.x && BIRD_X - BIRD_R < p.x + PIPE_W) {
+          if (birdY - BIRD_R < p.gapY || birdY + BIRD_R > p.gapY + gap) {
+            gameOver();
+          }
+        }
+      }
+    } else if (state === "idle") {
+      // 待机轻微浮动
+      birdY = H / 2 - 20 + Math.sin(performance.now() / 400) * 6;
+      birdRot = Math.sin(performance.now() / 400) * 0.1;
+    } else if (state === "over") {
+      // 鸟继续下落到地面
+      if (birdY + BIRD_R < groundY) {
+        birdV += GRAVITY * dt;
+        birdY += birdV * dt;
+        birdRot += dt * 3;
+        if (birdY + BIRD_R >= groundY) {
+          birdY = groundY - BIRD_R;
+          birdRot = 1.4;
+        }
+      }
+    }
+  }
+
+  function render(now) {
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    // 震屏偏移
+    let sx = 0, sy = 0;
+    if (shakeT > 0) {
+      const mag = shakeT * 14;
+      sx = (Math.random() - 0.5) * mag;
+      sy = (Math.random() - 0.5) * mag;
+      ctx.setTransform(DPR, 0, 0, DPR, sx * DPR, sy * DPR);
+    }
+    ctx.clearRect(-20, -20, W + 40, H + 40);
+
+    drawBackground();
+    for (const p of pipes) drawPipe(p);
+    drawGround();
+    drawBird(now);
+    drawScoreNow(now);
+  }
+
+  // ---- 输入 ----
+  function onTap(e) {
+    if (e) e.preventDefault();
+    if (state === "over") return;
+    flap();
+  }
+  cv.addEventListener("pointerdown", onTap);
+  cv.addEventListener("touchstart", (e) => { e.preventDefault(); }, { passive: false });
+  cv.addEventListener("touchmove", (e) => { e.preventDefault(); }, { passive: false });
+
+  window.addEventListener("keydown", (e) => {
+    if (e.code === "Space" || e.code === "ArrowUp" || e.code === "Enter") {
+      e.preventDefault();
+      if (state !== "over") flap();
+    }
+  });
+
+  document.getElementById("restartBtn").addEventListener("click", () => reset());
+  document.getElementById("themeBtn").addEventListener("click", () => {
+    SG.toggleTheme();
+    loadPalette();
+  });
+  document.getElementById("helpBtn").addEventListener("click", () => {
+    const ov = SG.overlay({
+      title: "像素鸟 Flappy",
+      body: "点击屏幕、触摸或按 <span class='kbd'>空格</span> 让小鸟向上跳，重力会把它向下拉。<br><br>穿越绿色管道的间隙，每穿过一对得 1 分。撞到管道、地面或天花板即结束。<br><br>每过 5 分难度略增：间隙变窄、滚动变快。分数与最高分自动保存。",
+      buttons: [{ text: "开始", kind: "primary", onClick: () => ov.hide() }],
+    });
+    ov.show();
+  });
+
+  window.addEventListener("resize", () => { resize(); });
+
+  // 防止页面滚动 / 双击缩放
+  let lastTouch = 0;
+  document.addEventListener("touchend", (e) => {
+    const t = Date.now();
+    if (t - lastTouch < 300) e.preventDefault();
+    lastTouch = t;
+  }, { passive: false });
+  document.addEventListener("touchmove", (e) => { if (e.target === cv) e.preventDefault(); }, { passive: false });
+
+  // ---- 启动 ----
+  resize();
+  reset();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>

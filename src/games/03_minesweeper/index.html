@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>扫雷 Minesweeper · slowpapa</title>
+<meta name="description" content="经典扫雷 H5 小游戏：三档难度、首点安全、自动展开空白、长按标旗、计时与剩余雷数。">
+<link rel="stylesheet" href="/assets/game.css">
+<style>
+  /* ---- Minesweeper-specific layout ---- */
+  .ms-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+  }
+  .ms-head .segment button { padding: 7px 12px; }
+
+  .ms-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 12px;
+    padding: 8px 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-variant-numeric: tabular-nums;
+  }
+  .ms-bar .meter {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    font-weight: 800;
+  }
+  .ms-bar .meter .ico {
+    display: inline-grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 8px;
+    background: var(--surface-2);
+    font-size: 14px;
+  }
+  .ms-bar .meter .v { color: var(--accent-2); min-width: 2ch; text-align: right; }
+  .ms-bar .face {
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    display: grid; place-items: center;
+    font-size: 20px;
+    cursor: pointer;
+    transition: transform .12s ease, background .2s ease;
+  }
+  .ms-bar .face:active { transform: scale(.9); }
+
+  #play {
+    display: block;
+    width: 100%;
+    height: auto;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    touch-action: none;
+    cursor: pointer;
+  }
+  .game-board.ms { width: min(94vw, 480px); padding: 12px; }
+
+  .hint-bar {
+    text-align: center;
+    color: var(--text-mute);
+    font-size: 11px;
+    margin-top: 12px;
+    line-height: 1.7;
+  }
+  .hint-bar .kbd { margin: 0 2px; }
+
+  @media (max-width: 380px) {
+    .game-topbar .stats { gap: 6px; }
+    .game-topbar .stat .v { font-size: 13px; }
+    .game-topbar .stat .k { font-size: 9px; }
+  }
+</style>
+</head>
+<body>
+<div class="game-shell">
+  <div class="game-topbar">
+    <a class="back" href="/" aria-label="返回游戏大厅">‹</a>
+    <div class="title">扫雷<small>首点安全 · 长按标旗</small></div>
+    <div class="stats">
+      <div class="stat" data-stat="mines"><span class="k">剩余雷</span><span class="v accent" id="s-mines">0</span></div>
+      <div class="stat" data-stat="time"><span class="k">用时</span><span class="v" id="s-time">0</span></div>
+    </div>
+    <button class="icon-btn" id="theme" aria-label="切换主题">☾</button>
+    <button class="icon-btn" id="help" aria-label="规则">?</button>
+  </div>
+
+  <div class="game-stage">
+    <div class="game-board ms">
+      <div class="ms-head">
+        <div class="segment" id="diff">
+          <button data-d="small" aria-pressed="true">小 9×9</button>
+          <button data-d="medium" aria-pressed="false">中 16×16</button>
+          <button data-d="large" aria-pressed="false">大 16×30</button>
+        </div>
+        <button class="btn sm" id="reset2">重开</button>
+      </div>
+
+      <div class="ms-bar">
+        <div class="meter"><span class="ico">💣</span><span class="v" id="b-mines">0</span></div>
+        <div class="face" id="face" title="重开">🙂</div>
+        <div class="meter"><span class="ico">⏱</span><span class="v" id="b-time">0</span></div>
+      </div>
+
+      <canvas id="play"></canvas>
+
+      <div class="hint-bar">
+        左键挖开 · 右键标旗<br>
+        移动端长按格子标旗 · <span class="kbd">R</span> 重开
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/assets/game.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  /* ---------- Difficulty presets ---------- */
+  const DIFFS = {
+    small:  { rows: 9,  cols: 9,  mines: 10, cell: 36 },
+    medium: { rows: 16, cols: 16, mines: 40, cell: 26 },
+    large:  { rows: 16, cols: 30, mines: 99, cell: 22 },
+  };
+  const N_COLORS = [
+    "", "#38bdf8", "#34d399", "#f87171", "#a78bfa",
+    "#fbbf24", "#22d3ee", "#f472b6", "#e5e7eb"
+  ];
+
+  /* ---------- State ---------- */
+  let diff = "small";
+  let rows = 0, cols = 0, totalMines = 0, cell = 0;
+  let board = [];        // {mine, revealed, flagged, count}
+  let firstClick = true;
+  let alive = true;
+  let won = false;
+  let started = false;
+  let flagCount = 0;
+  let revealedNonMine = 0;
+  let startMs = 0, elapsed = 0, timerId = null;
+
+  /* ---------- DOM ---------- */
+  const canvas = document.getElementById("play");
+  const ctx = canvas.getContext("2d");
+  const elMines = document.getElementById("s-mines");
+  const elTime = document.getElementById("s-time");
+  const bMines = document.getElementById("b-mines");
+  const bTime = document.getElementById("b-time");
+  const faceEl = document.getElementById("face");
+
+  /* ---------- Helpers ---------- */
+  function fmtTime(s) {
+    const m = Math.floor(s / 60), r = s % 60;
+    return (m < 10 ? "0" : "") + m + ":" + (r < 10 ? "0" : "") + r;
+  }
+  function setMinesDisplay() { const v = totalMines - flagCount; elMines.textContent = v; bMines.textContent = v; }
+  function setTimeDisplay(s) { elTime.textContent = fmtTime(s); bTime.textContent = fmtTime(s); }
+  function setFace(t) { faceEl.textContent = t; }
+
+  /* ---------- Board setup ---------- */
+  function newGame() {
+    const d = DIFFS[diff];
+    rows = d.rows; cols = d.cols; totalMines = d.mines; cell = d.cell;
+    board = [];
+    for (let r = 0; r < rows; r++) {
+      const row = [];
+      for (let c = 0; c < cols; c++) {
+        row.push({ mine: false, revealed: false, flagged: false, count: 0 });
+      }
+      board.push(row);
+    }
+    firstClick = true; alive = true; won = false; started = false;
+    flagCount = 0; revealedNonMine = 0; elapsed = 0;
+    stopTimer();
+    setTimeDisplay(0);
+    setMinesDisplay();
+    setFace("🙂");
+    sizeCanvas();
+    draw();
+  }
+
+  /* Place mines avoiding the 3×3 around the first click. */
+  function placeMines(safeR, safeC) {
+    const forbidden = new Set();
+    for (let dr = -1; dr <= 1; dr++) {
+      for (let dc = -1; dc <= 1; dc++) {
+        const nr = safeR + dr, nc = safeC + dc;
+        if (nr >= 0 && nr < rows && nc >= 0 && nc < cols) forbidden.add(nr * cols + nc);
+      }
+    }
+    const pool = [];
+    for (let i = 0; i < rows * cols; i++) if (!forbidden.has(i)) pool.push(i);
+    // shuffle (Fisher–Yates) then take first totalMines
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [pool[i], pool[j]] = [pool[j], pool[i]];
+    }
+    const toPlace = Math.min(totalMines, pool.length);
+    for (let i = 0; i < toPlace; i++) {
+      const idx = pool[i];
+      board[Math.floor(idx / cols)][idx % cols].mine = true;
+    }
+    // counts
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        if (board[r][c].mine) continue;
+        let n = 0;
+        for (let dr = -1; dr <= 1; dr++) {
+          for (let dc = -1; dc <= 1; dc++) {
+            const nr = r + dr, nc = c + dc;
+            if (nr >= 0 && nr < rows && nc >= 0 && nc < cols && board[nr][nc].mine) n++;
+          }
+        }
+        board[r][c].count = n;
+      }
+    }
+  }
+
+  /* Flood-reveal connected 0 region. */
+  function reveal(r, c) {
+    const stack = [[r, c]];
+    while (stack.length) {
+      const [cr, cc] = stack.pop();
+      const cell_ = board[cr][cc];
+      if (cell_.revealed || cell_.flagged) continue;
+      cell_.revealed = true;
+      if (!cell_.mine) revealedNonMine++;
+      if (cell_.count === 0 && !cell_.mine) {
+        for (let dr = -1; dr <= 1; dr++) {
+          for (let dc = -1; dc <= 1; dc++) {
+            const nr = cr + dr, nc = cc + dc;
+            if (nr >= 0 && nr < rows && nc >= 0 && nc < cols &&
+                !board[nr][nc].revealed && !board[nr][nc].flagged) {
+              stack.push([nr, nc]);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  function checkWin() {
+    const safe = rows * cols - totalMines;
+    if (revealedNonMine >= safe) {
+      won = true; alive = false;
+      stopTimer();
+      setFace("😎");
+      // auto-flag remaining mines for tidy finish
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          if (board[r][c].mine && !board[r][c].flagged) {
+            board[r][c].flagged = true; flagCount++;
+          }
+        }
+      }
+      setMinesDisplay();
+      draw();
+      const ov = SG.overlay({
+        title: "胜利！", body: "用时 " + fmtTime(elapsed) + " · 难度 " + diffLabel(),
+        buttons: [
+          { text: "再来一局", kind: "primary", onClick: () => { ov.hide(); newGame(); } },
+          { text: "关闭", kind: "", onClick: () => ov.hide() },
+        ],
+      });
+      ov.show();
+      if (navigator.vibrate) navigator.vibrate([30, 40, 80]);
+    }
+  }
+
+  function lose(loseR, loseC) {
+    alive = false; won = false;
+    stopTimer();
+    setFace("😵");
+    // reveal all mines
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        if (board[r][c].mine) board[r][c].revealed = true;
+      }
+    }
+    board[loseR][loseC].mine = true; // ensure the triggered one shows
+    draw();
+    const ov = SG.overlay({
+      title: "失败", body: "踩到雷了 · 用时 " + fmtTime(elapsed),
+      buttons: [
+        { text: "重开", kind: "primary", onClick: () => { ov.hide(); newGame(); } },
+        { text: "查看棋盘", kind: "", onClick: () => ov.hide() },
+      ],
+    });
+    ov.show();
+    if (navigator.vibrate) navigator.vibrate([60, 30, 60]);
+  }
+
+  function diffLabel() {
+    return diff === "small" ? "小 9×9" : diff === "medium" ? "中 16×16" : "大 16×30";
+  }
+
+  /* ---------- Interaction ---------- */
+  function startTimer() {
+    if (started) return;
+    started = true;
+    startMs = Date.now();
+    timerId = setInterval(() => {
+      elapsed = Math.floor((Date.now() - startMs) / 1000);
+      setTimeDisplay(elapsed);
+    }, 250);
+  }
+  function stopTimer() { if (timerId) { clearInterval(timerId); timerId = null; } }
+
+  function cellAt(px, py) {
+    const c = Math.floor(px / cell);
+    const r = Math.floor(py / cell);
+    if (r < 0 || r >= rows || c < 0 || c >= cols) return null;
+    return [r, c];
+  }
+
+  function dig(r, c) {
+    if (!alive) return;
+    const b = board[r][c];
+    if (b.flagged || b.revealed) return;
+    if (firstClick) {
+      placeMines(r, c);
+      firstClick = false;
+      startTimer();
+    }
+    if (b.mine) {
+      b.revealed = true;
+      lose(r, c);
+      return;
+    }
+    reveal(r, c);
+    draw();
+    checkWin();
+  }
+
+  function toggleFlag(r, c) {
+    if (!alive) return;
+    const b = board[r][c];
+    if (b.revealed) return;
+    if (!b.flagged && flagCount >= totalMines) {
+      // allow un-flag only; flag limit optional — still allow
+    }
+    b.flagged = !b.flagged;
+    flagCount += b.flagged ? 1 : -1;
+    setMinesDisplay();
+    draw();
+  }
+
+  /* Chord: clicking a revealed number with matching flags reveals neighbors. */
+  function chord(r, c) {
+    const b = board[r][c];
+    if (!b.revealed || b.count === 0) return;
+    let flags = 0;
+    const targets = [];
+    for (let dr = -1; dr <= 1; dr++) {
+      for (let dc = -1; dc <= 1; dc++) {
+        if (!dr && !dc) continue;
+        const nr = r + dr, nc = c + dc;
+        if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) continue;
+        const nb = board[nr][nc];
+        if (nb.flagged) flags++;
+        else if (!nb.revealed) targets.push([nr, nc]);
+      }
+    }
+    if (flags !== b.count) return;
+    for (const [nr, nc] of targets) {
+      dig(nr, nc);
+      if (!alive) break;
+    }
+    draw();
+  }
+
+  /* ---------- Mouse / touch ---------- */
+  let pressCell = null;        // [r,c] of current pointer down
+  let pressMoved = false;
+  let longPressTimer = null;
+  let longPressFired = false;
+
+  function canvasPos(e) {
+    const rect = canvas.getBoundingClientRect();
+    const x = (e.clientX - rect.left) * (canvas.width / dpr / rect.width);
+    const y = (e.clientY - rect.top) * (canvas.height / dpr / rect.height);
+    return [x, y];
+  }
+
+  canvas.addEventListener("contextmenu", e => e.preventDefault());
+
+  canvas.addEventListener("mousedown", e => {
+    if (!alive) return;
+    const [x, y] = canvasPos(e);
+    const rc = cellAt(x, y);
+    if (!rc) return;
+    if (e.button === 2) { toggleFlag(rc[0], rc[1]); return; }
+    if (e.button === 0) { pressCell = rc; pressMoved = false; }
+  });
+
+  canvas.addEventListener("mousemove", e => {
+    if (!pressCell) return;
+    const [x, y] = canvasPos(e);
+    const rc = cellAt(x, y);
+    if (!rc || rc[0] !== pressCell[0] || rc[1] !== pressCell[1]) pressMoved = true;
+  });
+
+  canvas.addEventListener("mouseup", e => {
+    if (e.button !== 0 || !pressCell) return;
+    const [r, c] = pressCell;
+    pressCell = null;
+    if (!alive) return;
+    if (pressMoved) return;
+    const b = board[r][c];
+    if (b.revealed && b.count > 0) chord(r, c);
+    else dig(r, c);
+  });
+
+  canvas.addEventListener("mouseleave", () => { pressCell = null; });
+
+  /* Touch: tap = dig, long press = flag. */
+  canvas.addEventListener("touchstart", e => {
+    if (!alive) return;
+    e.preventDefault();
+    const t = e.changedTouches[0];
+    const rect = canvas.getBoundingClientRect();
+    const x = (t.clientX - rect.left) * (canvas.width / dpr / rect.width);
+    const y = (t.clientY - rect.top) * (canvas.height / dpr / rect.height);
+    const rc = cellAt(x, y);
+    if (!rc) return;
+    pressCell = rc; pressMoved = false; longPressFired = false;
+    longPressTimer = setTimeout(() => {
+      longPressFired = true;
+      toggleFlag(rc[0], rc[1]);
+      if (navigator.vibrate) navigator.vibrate(20);
+    }, 380);
+  }, { passive: false });
+
+  canvas.addEventListener("touchmove", e => {
+    if (!pressCell) return;
+    const t = e.changedTouches[0];
+    const rect = canvas.getBoundingClientRect();
+    const x = (t.clientX - rect.left) * (canvas.width / dpr / rect.width);
+    const y = (t.clientY - rect.top) * (canvas.height / dpr / rect.height);
+    const rc = cellAt(x, y);
+    if (!rc || rc[0] !== pressCell[0] || rc[1] !== pressCell[1]) {
+      pressMoved = true;
+      if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+    }
+  }, { passive: false });
+
+  canvas.addEventListener("touchend", e => {
+    if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+    if (!pressCell) return;
+    const [r, c] = pressCell;
+    pressCell = null;
+    if (!alive || longPressFired || pressMoved) return;
+    const b = board[r][c];
+    if (b.revealed && b.count > 0) chord(r, c);
+    else dig(r, c);
+  });
+
+  /* ---------- Rendering ---------- */
+  let dpr = 1;
+  function sizeCanvas() {
+    dpr = Math.max(1, window.devicePixelRatio || 1);
+    const w = cols * cell;
+    const h = rows * cell;
+    canvas.style.width = w + "px";
+    canvas.style.height = h + "px";
+    canvas.width = Math.floor(w * dpr);
+    canvas.height = Math.floor(h * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  function roundRect(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  function draw() {
+    const cs = getComputedStyle(document.documentElement);
+    const surface = cs.getPropertyValue("--surface").trim() || "rgba(255,255,255,.06)";
+    const surface2 = cs.getPropertyValue("--surface-2").trim() || "rgba(255,255,255,.10)";
+    const border = cs.getPropertyValue("--border").trim();
+    const text = cs.getPropertyValue("--text").trim();
+    const textDim = cs.getPropertyValue("--text-dim").trim();
+    const good = cs.getPropertyValue("--good").trim();
+    const bad = cs.getPropertyValue("--bad").trim();
+    const warn = cs.getPropertyValue("--warn").trim();
+    const accent2 = cs.getPropertyValue("--accent-2").trim();
+    const pad = 1;
+    ctx.clearRect(0, 0, cols * cell, rows * cell);
+
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const x = c * cell + pad, y = r * cell + pad, s = cell - pad * 2;
+        const b = board[r][c];
+        const rad = Math.max(4, s * 0.16);
+
+        if (b.revealed) {
+          // revealed background
+          if (b.mine) {
+            ctx.fillStyle = "rgba(248,113,113,0.28)";
+          } else {
+            ctx.fillStyle = "transparent";
+          }
+          if (b.mine) { roundRect(x, y, s, s, rad); ctx.fill(); }
+          // subtle inner border for revealed
+          ctx.strokeStyle = border;
+          ctx.lineWidth = 1;
+          roundRect(x + 0.5, y + 0.5, s - 1, s - 1, rad);
+          ctx.stroke();
+
+          if (b.mine) {
+            // mine icon
+            const cx = x + s / 2, cy = y + s / 2, radM = s * 0.22;
+            ctx.fillStyle = bad;
+            ctx.beginPath();
+            ctx.arc(cx, cy, radM, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = bad;
+            ctx.lineWidth = Math.max(1.5, s * 0.06);
+            for (let k = 0; k < 8; k++) {
+              const a = (k / 8) * Math.PI * 2;
+              ctx.beginPath();
+              ctx.moveTo(cx + Math.cos(a) * radM, cy + Math.sin(a) * radM);
+              ctx.lineTo(cx + Math.cos(a) * radM * 1.7, cy + Math.sin(a) * radM * 1.7);
+              ctx.stroke();
+            }
+          } else if (b.count > 0) {
+            ctx.fillStyle = N_COLORS[b.count] || text;
+            ctx.font = "700 " + Math.floor(s * 0.58) + "px 'PingFang SC',system-ui,sans-serif";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText(String(b.count), x + s / 2, y + s / 2 + 1);
+          }
+        } else {
+          // cover cell
+          const grd = ctx.createLinearGradient(x, y, x, y + s);
+          grd.addColorStop(0, surface2);
+          grd.addColorStop(1, surface);
+          ctx.fillStyle = grd;
+          roundRect(x, y, s, s, rad);
+          ctx.fill();
+          ctx.strokeStyle = border;
+          ctx.lineWidth = 1;
+          ctx.stroke();
+
+          if (b.flagged) {
+            const cx = x + s / 2, cy = y + s / 2;
+            const pw = s * 0.18, ph = s * 0.32;
+            // pole
+            ctx.strokeStyle = textDim;
+            ctx.lineWidth = Math.max(1.5, s * 0.05);
+            ctx.beginPath();
+            ctx.moveTo(cx - pw * 0.4, cy - ph);
+            ctx.lineTo(cx - pw * 0.4, cy + ph);
+            ctx.stroke();
+            // flag
+            ctx.fillStyle = accent2;
+            ctx.beginPath();
+            ctx.moveTo(cx - pw * 0.4, cy - ph);
+            ctx.lineTo(cx + pw, cy - ph * 0.55);
+            ctx.lineTo(cx - pw * 0.4, cy + ph * 0.05);
+            ctx.closePath();
+            ctx.fill();
+          }
+        }
+      }
+    }
+  }
+
+  /* ---------- UI wiring ---------- */
+  document.getElementById("diff").addEventListener("click", e => {
+    const btn = e.target.closest("button[data-d]");
+    if (!btn) return;
+    diff = btn.dataset.d;
+    document.querySelectorAll("#diff button").forEach(b => {
+      b.setAttribute("aria-pressed", b === btn ? "true" : "false");
+    });
+    newGame();
+  });
+
+  function reset() { newGame(); }
+  faceEl.addEventListener("click", reset);
+  document.getElementById("reset2").addEventListener("click", reset);
+
+  document.getElementById("theme").addEventListener("click", () => {
+    const t = SG.toggleTheme();
+    document.getElementById("theme").textContent = t === "dark" ? "☾" : "☀";
+    draw();
+  });
+  // init theme icon
+  document.getElementById("theme").textContent =
+    (document.documentElement.getAttribute("data-theme") || "dark") === "dark" ? "☾" : "☀";
+
+  document.getElementById("help").addEventListener("click", () => {
+    const ov = SG.overlay({
+      title: "扫雷规则",
+      body: "点开格子，数字代表周围 8 格的雷数。推断出所有雷的位置并标旗，挖开全部安全格即胜。<br><br>" +
+            "• 左键挖开，右键 / 长按标旗<br>" +
+            "• 首次点击安全且自动展开 0 区<br>" +
+            "• 在已揭示的数字上点击，若周围旗数等于该数字，自动挖开剩余邻居（chord）<br>" +
+            "• 三档难度：小 9×9 / 中 16×16 / 大 16×30",
+      buttons: [{ text: "知道了", kind: "primary", onClick: () => ov.hide() }],
+    });
+    ov.show();
+  });
+
+  window.addEventListener("keydown", e => {
+    if (e.key === "r" || e.key === "R") { newGame(); }
+  });
+
+  window.addEventListener("resize", () => { sizeCanvas(); draw(); });
+
+  /* ---------- Boot ---------- */
+  newGame();
+})();
+</script>
+</body>
+</html>

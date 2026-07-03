@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>华容道 Klotski · slowpapa</title>
+<meta name="description" content="经典华容道横刀立马 H5 小游戏：拖拽或方向键移动将牌，曹操从底部中央出口逃出即胜，步数计数与最少步数记录。">
+<link rel="stylesheet" href="/assets/game.css">
+<style>
+  /* ---- Klotski-specific layout ---- */
+  .game-board.klotski {
+    width: min(92vw, 380px);
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  /* the wooden frame around the 4×5 board, with a 2-wide exit gap at bottom-center */
+  .k-frame {
+    position: relative;
+    width: 100%;
+    padding-bottom: 26px; /* room for the exit label */
+  }
+  .k-board {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 4 / 5;
+    border: 2px solid var(--border);
+    border-bottom: none;
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    touch-action: none;
+    overflow: visible;
+  }
+  /* bottom wall segments: cover col 0 and col 3, leaving cols 1-2 as the exit */
+  .k-wall-l, .k-wall-r {
+    position: absolute;
+    bottom: 0;
+    height: 2px;
+    width: 25%;
+    background: var(--border);
+  }
+  .k-wall-l { left: 0; border-bottom-left-radius: var(--radius-sm); }
+  .k-wall-r { right: 0; border-bottom-right-radius: var(--radius-sm); }
+  .k-exit {
+    position: absolute;
+    left: 25%;
+    right: 25%;
+    bottom: 4px;
+    height: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .1em;
+    color: var(--accent-2);
+    pointer-events: none;
+  }
+  .k-exit::before, .k-exit::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    width: 0;
+    height: 0;
+    border-style: solid;
+    opacity: .5;
+  }
+  /* faint glow showing the escape lane */
+  .k-exit-glow {
+    position: absolute;
+    left: 25%;
+    right: 25%;
+    bottom: 2px;
+    height: 6px;
+    background: linear-gradient(to bottom, rgba(236,72,153,.35), transparent);
+    border-radius: 0 0 12px 12px;
+    pointer-events: none;
+  }
+
+  /* ---- pieces ---- */
+  .k-piece {
+    position: absolute;
+    top: 0; left: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    font-weight: 800;
+    color: #fff;
+    user-select: none;
+    cursor: grab;
+    transition: transform .14s cubic-bezier(.34, 1.2, .64, 1), box-shadow .15s ease, outline-color .15s ease;
+    box-shadow: 0 4px 10px -4px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.25);
+    will-change: transform;
+    touch-action: none;
+  }
+  .k-piece:active { cursor: grabbing; }
+  .k-piece.sel {
+    outline: 2px solid var(--accent-2);
+    outline-offset: 2px;
+    box-shadow: 0 0 0 4px rgba(236,72,153,.22), 0 6px 14px -4px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.25);
+    z-index: 5;
+  }
+  .k-piece .k-name { font-size: clamp(13px, 4.2vw, 18px); line-height: 1; text-shadow: 0 1px 2px rgba(0,0,0,.4); }
+  .k-piece .k-sub  { font-size: 9px; opacity: .7; margin-top: 2px; letter-spacing: .1em; }
+
+  .k-piece.cao {
+    background: var(--grad);
+    flex-direction: column;
+  }
+  .k-piece.v {
+    background: linear-gradient(160deg, rgba(56,189,248,.92), rgba(14,116,144,.92));
+  }
+  .k-piece.h {
+    background: linear-gradient(160deg, rgba(251,191,36,.95), rgba(180,83,9,.92));
+    color: #2a1604;
+    text-shadow: 0 1px 1px rgba(255,255,255,.3);
+  }
+  .k-piece.soldier {
+    background: linear-gradient(160deg, rgba(180,180,200,.85), rgba(90,90,120,.85));
+  }
+
+  /* ---- controls ---- */
+  .k-controls {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    margin-top: 14px;
+    width: 100%;
+    flex-wrap: wrap;
+  }
+  .hint-bar {
+    text-align: center;
+    color: var(--text-mute);
+    font-size: 11px;
+    margin-top: 10px;
+    line-height: 1.6;
+  }
+  .hint-bar .kbd { margin: 0 2px; }
+
+  @media (max-width: 380px) {
+    .game-topbar .stat .v { font-size: 13px; }
+    .game-topbar .stat .k { font-size: 9px; }
+  }
+</style>
+</head>
+<body>
+<div class="game-shell">
+  <div class="game-topbar">
+    <a class="back" href="/" aria-label="返回游戏大厅">‹</a>
+    <div class="title">华容道<small>横刀立马 · 曹操出底部即胜</small></div>
+    <div class="stats">
+      <div class="stat" data-stat="steps"><span class="k">步数</span><span class="v" id="s-steps">0</span></div>
+      <div class="stat" data-stat="best"><span class="k">最少</span><span class="v accent" id="s-best">0</span></div>
+    </div>
+    <button class="icon-btn" id="btn-reset" aria-label="重置">↻</button>
+    <button class="icon-btn" id="btn-help" aria-label="规则">?</button>
+    <button class="icon-btn" id="btn-theme" aria-label="切换主题">◐</button>
+  </div>
+
+  <div class="game-stage" id="stage">
+    <div class="game-board klotski">
+      <div class="k-frame">
+        <div class="k-board" id="board">
+          <div class="k-exit-glow"></div>
+          <!-- pieces injected by JS -->
+        </div>
+        <div class="k-wall-l"></div>
+        <div class="k-wall-r"></div>
+        <div class="k-exit">出口 ↓</div>
+      </div>
+
+      <div class="k-controls">
+        <div class="touch-pad dir" id="dpad">
+          <button class="pad-btn up"    data-act="up"    aria-label="上">↑</button>
+          <button class="pad-btn left"  data-act="left"  aria-label="左">←</button>
+          <div class="pad-blank"></div>
+          <button class="pad-btn right" data-act="right" aria-label="右">→</button>
+          <button class="pad-btn down"  data-act="down"  aria-label="下">↓</button>
+        </div>
+      </div>
+
+      <div class="hint-bar">
+        点击或拖拽方块选中 · <span class="kbd">←</span><span class="kbd">→</span><span class="kbd">↑</span><span class="kbd">↓</span> 或滑动移动 · 曹操(2×2)从底部中央出口逃出即胜
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/assets/game.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  const KEY = "klotski";
+  const COLS = 4, ROWS = 5;
+  const DIR = { up:[0,-1], down:[0,1], left:[-1,0], right:[1,0] };
+
+  /* ---- classic 横刀立马 initial layout ----
+     4 wide × 5 tall. CaoCao 2×2 top-center, 4 vertical generals (1×2),
+     1 horizontal general GuanYu (2×1), 4 soldiers (1×1), 2 empty cells. */
+  const INITIAL = [
+    { id:"cc", name:"曹操", sub:"2×2", x:1, y:0, w:2, h:2, kind:"cao" },
+    { id:"zf", name:"张飞", x:0, y:0, w:1, h:2, kind:"v" },
+    { id:"zy", name:"赵云", x:3, y:0, w:1, h:2, kind:"v" },
+    { id:"mc", name:"马超", x:0, y:2, w:1, h:2, kind:"v" },
+    { id:"hz", name:"黄忠", x:3, y:2, w:1, h:2, kind:"v" },
+    { id:"gy", name:"关羽", x:1, y:2, w:2, h:1, kind:"h" },
+    { id:"s1", name:"兵",   x:1, y:3, w:1, h:1, kind:"soldier" },
+    { id:"s2", name:"兵",   x:2, y:3, w:1, h:1, kind:"soldier" },
+    { id:"s3", name:"兵",   x:0, y:4, w:1, h:1, kind:"soldier" },
+    { id:"s4", name:"兵",   x:3, y:4, w:1, h:1, kind:"soldier" },
+  ];
+  // empty cells at start: (1,4) and (2,4)
+
+  /* ---- state ---- */
+  let pieces = [];          // current positions (copy of INITIAL)
+  let grid;                 // ROWS x COLS of piece id or null
+  let selected = "cc";      // selected piece id (default CaoCao)
+  let steps = 0;
+  let won = false;
+  let cell = 60;            // px per cell, set on resize
+  const PAD = 4;            // gap between pieces in px
+
+  /* ---- DOM ---- */
+  const boardEl = document.getElementById("board");
+  const stage = document.getElementById("stage");
+  const elSteps = document.getElementById("s-steps");
+  const elBest = document.getElementById("s-best");
+  const pieceEls = {};
+
+  /* ---- best steps (min) persisted directly (lower is better) ---- */
+  const BEST_KEY = "slowpapa-best-" + KEY;
+  function bestSteps() { return parseInt(localStorage.getItem(BEST_KEY) || "0", 10) || 0; }
+  function setBestSteps(n) {
+    const b = bestSteps();
+    if (!b || n < b) { localStorage.setItem(BEST_KEY, String(n)); return n; }
+    return b;
+  }
+
+  /* ---- grid helpers ---- */
+  function rebuildGrid() {
+    grid = Array.from({ length: ROWS }, () => new Array(COLS).fill(null));
+    for (const p of pieces) {
+      for (let cx = 0; cx < p.w; cx++)
+        for (let cy = 0; cy < p.h; cy++)
+          grid[p.y + cy][p.x + cx] = p.id;
+    }
+  }
+
+  /* ---- movement validation ----
+     returns "ok" | "blocked" | "win" */
+  function tryMove(p, dx, dy) {
+    const targets = [];
+    for (let cx = 0; cx < p.w; cx++)
+      for (let cy = 0; cy < p.h; cy++)
+        targets.push([p.x + cx + dx, p.y + cy + dy]);
+
+    const out = targets.filter(([x, y]) => x < 0 || x >= COLS || y < 0 || y >= ROWS);
+    if (out.length) {
+      // only CaoCao moving down through the bottom-center exit may leave the board
+      if (p.id !== "cc" || dy !== 1) return "blocked";
+      const exitOk = out.every(([x, y]) => y === ROWS && (x === 1 || x === 2));
+      if (!exitOk) return "blocked";
+      // the cells remaining inside the board must be empty (and not occupied by others)
+      const inside = targets.filter(([x, y]) => y >= 0 && y < ROWS && x >= 0 && x < COLS);
+      for (const [x, y] of inside) {
+        if (grid[y][x] && grid[y][x] !== p.id) return "blocked";
+      }
+      return "win";
+    }
+    // fully in-board: every target cell must be empty or part of this same piece
+    for (const [x, y] of targets) {
+      if (x < 0 || x >= COLS || y < 0 || y >= ROWS) return "blocked";
+      if (grid[y][x] && grid[y][x] !== p.id) return "blocked";
+    }
+    return "ok";
+  }
+
+  function applyMove(p, dx, dy) {
+    for (let cx = 0; cx < p.w; cx++)
+      for (let cy = 0; cy < p.h; cy++)
+        grid[p.y + cy][p.x + cx] = null;
+    p.x += dx; p.y += dy;
+    for (let cx = 0; cx < p.w; cx++)
+      for (let cy = 0; cy < p.h; cy++)
+        grid[p.y + cy][p.x + cx] = p.id;
+  }
+
+  function moveDir(dir) {
+    if (won) return;
+    const p = pieces.find(x => x.id === selected);
+    if (!p) return;
+    const [dx, dy] = DIR[dir];
+    const r = tryMove(p, dx, dy);
+    if (r === "blocked") return;
+    if (r === "win") {
+      applyMove(p, dx, dy);   // visually slide CaoCao out
+      steps++;
+      updateStats();
+      render();
+      navigator.vibrate?.([12, 30, 24]);
+      doWin();
+      return;
+    }
+    applyMove(p, dx, dy);
+    steps++;
+    updateStats();
+    render();
+    navigator.vibrate?.(8);
+  }
+
+  /* ---- rendering ---- */
+  function buildPieces() {
+    for (const p of pieces) {
+      if (pieceEls[p.id]) continue;
+      const el = document.createElement("div");
+      el.className = "k-piece " + (p.id === "cc" ? "cao" : p.kind);
+      el.dataset.id = p.id;
+      el.innerHTML = '<span class="k-name">' + p.name + "</span>" +
+                     (p.sub ? '<span class="k-sub">' + p.sub + "</span>" : "");
+      boardEl.appendChild(el);
+      pieceEls[p.id] = el;
+      el.addEventListener("pointerdown", (e) => onPieceDown(p, e));
+    }
+  }
+
+  function render() {
+    for (const p of pieces) {
+      const el = pieceEls[p.id];
+      if (!el) continue;
+      el.style.width = (p.w * cell - PAD) + "px";
+      el.style.height = (p.h * cell - PAD) + "px";
+      el.style.transform = "translate(" + p.x * cell + "px," + p.y * cell + "px)";
+      el.classList.toggle("sel", p.id === selected);
+    }
+  }
+
+  function updateStats() {
+    elSteps.textContent = steps;
+    elBest.textContent = bestSteps() || "—";
+  }
+
+  function resize() {
+    const rect = boardEl.getBoundingClientRect();
+    if (!rect.width) return;
+    cell = rect.width / COLS;
+    render();
+  }
+
+  /* ---- selection + drag ---- */
+  let drag = null; // { id, pid, sx, sy, moved }
+
+  function onPieceDown(p, e) {
+    if (won) return;
+    e.preventDefault();
+    selected = p.id;
+    render();
+    try { boardEl.setPointerCapture(e.pointerId); } catch (_) {}
+    drag = { id: p.id, pid: e.pointerId, sx: e.clientX, sy: e.clientY, moved: false };
+  }
+
+  window.addEventListener("pointermove", (e) => {
+    if (!drag || e.pointerId !== drag.pid) return;
+    const dx = e.clientX - drag.sx;
+    const dy = e.clientY - drag.sy;
+    const thr = cell * 0.45;
+    if (Math.abs(dx) < thr && Math.abs(dy) < thr) return;
+    let dir;
+    if (Math.abs(dx) > Math.abs(dy)) dir = dx > 0 ? "right" : "left";
+    else dir = dy > 0 ? "down" : "up";
+    // only allow movement of the dragged (selected) piece
+    if (selected === drag.id) moveDir(dir);
+    // reset origin so a continued drag can move the next cell
+    drag.sx = e.clientX;
+    drag.sy = e.clientY;
+    drag.moved = true;
+  });
+
+  function endDrag(e) {
+    if (!drag || e.pointerId !== drag.pid) return;
+    try { boardEl.releasePointerCapture?.(e.pointerId); } catch (_) {}
+    drag = null;
+  }
+  window.addEventListener("pointerup", endDrag);
+  window.addEventListener("pointercancel", endDrag);
+
+  /* ---- win / help / reset ---- */
+  let overlay = null;
+
+  function doWin() {
+    won = true;
+    const best = setBestSteps(steps);
+    overlay = SG.overlay({
+      title: "曹操脱险！",
+      score: steps,
+      body: "经典横刀立马最少 81 步解。<br>你的最少步数记录：" + best + " 步。",
+      buttons: [
+        { text: "再来一局", kind: "primary", onClick: () => { overlay.hide(); reset(); } },
+        { text: "返回大厅", kind: "", onClick: () => { location.href = "/"; } },
+      ],
+    });
+    overlay.show();
+  }
+
+  function showHelp() {
+    overlay = SG.overlay({
+      title: "玩法",
+      body: "经典华容道·横刀立马。4×5 棋盘，曹操(2×2)居顶，四员竖将、关羽(横)、四兵环绕。<br><br>" +
+            "<b>移动</b>：点选或拖拽一个方块选中后，用方向键 / 屏幕方向键 / 滑动移动一格，" +
+            "只能向空格方向移动。<br>" +
+            "<b>目标</b>：让曹操从底部中央 <b style='color:var(--accent-2)'>出口</b> 逃出即胜。<br>" +
+            "步数越少越好。",
+      buttons: [{ text: "开始", kind: "primary", onClick: () => overlay.hide() }],
+    });
+    overlay.show();
+  }
+
+  function reset() {
+    pieces = INITIAL.map(p => ({ ...p }));
+    rebuildGrid();
+    selected = "cc";
+    steps = 0;
+    won = false;
+    // remove old piece elements so classes (cao/v/...) match new kind
+    for (const id in pieceEls) { pieceEls[id].remove(); delete pieceEls[id]; }
+    buildPieces();
+    updateStats();
+    resize();
+    render();
+  }
+
+  /* ---- input: keyboard, dpad, swipe ---- */
+  window.addEventListener("keydown", (e) => {
+    const k = e.key;
+    if (["ArrowLeft","ArrowRight","ArrowUp","ArrowDown"].includes(k)) e.preventDefault();
+    if (k === "ArrowLeft") moveDir("left");
+    else if (k === "ArrowRight") moveDir("right");
+    else if (k === "ArrowUp") moveDir("up");
+    else if (k === "ArrowDown") moveDir("down");
+    else if (k === "r" || k === "R") reset();
+  });
+
+  document.getElementById("dpad").addEventListener("click", (e) => {
+    const act = e.target.dataset.act;
+    if (act) moveDir(act);
+  });
+
+  SG.swipe(stage, (dir) => { if (!drag) moveDir(dir); });
+
+  document.getElementById("btn-reset").addEventListener("click", reset);
+  document.getElementById("btn-help").addEventListener("click", showHelp);
+  document.getElementById("btn-theme").addEventListener("click", () => SG.toggleTheme());
+
+  // prevent context menu / double-tap zoom inside the board
+  document.addEventListener("contextmenu", (e) => {
+    if (e.target.closest(".k-board, .touch-pad")) e.preventDefault();
+  });
+  document.addEventListener("gesturestart", (e) => e.preventDefault());
+  document.addEventListener("dblclick", (e) => { if (e.target.closest(".k-board")) e.preventDefault(); }, { passive: false });
+
+  /* ---- resize ---- */
+  let resizeTimer = 0;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(resize, 80);
+  });
+  if (window.ResizeObserver) {
+    new ResizeObserver(() => resize()).observe(boardEl);
+  }
+
+  /* ---- boot ---- */
+  reset();
+  requestAnimationFrame(resize);
+  // first-time hint
+  if (!bestSteps()) showHelp();
+})();
+</script>
+</body>
+</html>

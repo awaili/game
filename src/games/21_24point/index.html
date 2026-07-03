@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>24点 - Slowpapa</title>
+  <meta name="description" content="24点 H5 数学游戏：随机四个 1-13 的数字（保证有解），用 + - × ÷ 和括号组成等于 24 的表达式。求解提示、连胜计分、最高分持久化，移动端友好。Slowpapa 益智游戏大厅。">
+  <link rel="stylesheet" href="/assets/game.css">
+  <style>
+    /* ---- 24point board (inline, theme-aware) ---- */
+    .game-board { display: flex; flex-direction: column; gap: 14px; }
+
+    /* target / objective strip */
+    .goal-strip {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 10px; padding: 10px 14px;
+      background: var(--grad-soft);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+    }
+    .goal-strip .goal-label {
+      font-size: 11px; font-weight: 700; letter-spacing: .12em;
+      color: var(--text-mute); text-transform: uppercase;
+    }
+    .goal-strip .goal-target {
+      font-size: 26px; font-weight: 900; color: var(--accent-2);
+      font-variant-numeric: tabular-nums;
+      text-shadow: 0 0 14px rgba(236,72,153,.4);
+    }
+    .goal-strip .goal-streak {
+      font-size: 13px; font-weight: 700; color: var(--accent-3);
+      font-variant-numeric: tabular-nums;
+    }
+    .goal-strip .goal-streak .flame { color: var(--warn); }
+
+    /* expression display */
+    .expr-box {
+      position: relative;
+      min-height: 64px;
+      padding: 14px 16px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      display: flex; align-items: center; justify-content: center;
+      flex-wrap: wrap; gap: 4px;
+      word-break: break-all; text-align: center;
+    }
+    .expr-box.empty::before {
+      content: "点击下方数字与运算符组成算式";
+      color: var(--text-mute); font-size: 13px; font-weight: 500;
+    }
+    .expr-box .tok {
+      display: inline-block;
+      font-size: 22px; font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      color: var(--text);
+      padding: 0 2px;
+    }
+    .expr-box .tok.num { color: var(--accent-3); }
+    .expr-box .tok.op { color: var(--accent-2); margin: 0 2px; }
+    .expr-box .tok.par { color: var(--text-dim); }
+    .expr-box.ok { border-color: var(--good); box-shadow: 0 0 0 2px rgba(52,211,153,.25); }
+    .expr-box.bad { border-color: var(--bad); box-shadow: 0 0 0 2px rgba(248,113,113,.25); }
+    .expr-box.flash { animation: flash .4s ease; }
+    @keyframes flash { 0%,100%{transform:scale(1)} 50%{transform:scale(1.03)} }
+    .expr-box.shake { animation: shake .35s ease; }
+    @keyframes shake { 0%,100%{transform:translateX(0)} 25%{transform:translateX(-6px)} 75%{transform:translateX(6px)} }
+
+    .expr-result {
+      text-align: center; font-size: 13px; font-weight: 700;
+      color: var(--text-mute); min-height: 18px;
+      font-variant-numeric: tabular-nums;
+    }
+    .expr-result.good { color: var(--good); }
+    .expr-result.bad { color: var(--bad); }
+
+    /* number tiles */
+    .num-row {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
+    }
+    .num-tile {
+      aspect-ratio: 1 / 1;
+      display: grid; place-items: center;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--text);
+      font-size: 30px; font-weight: 900;
+      font-variant-numeric: tabular-nums;
+      cursor: pointer;
+      transition: transform .12s ease, background .2s ease, opacity .2s ease;
+      user-select: none;
+    }
+    .num-tile:active { transform: scale(.94); }
+    .num-tile.used {
+      opacity: .32; pointer-events: none;
+      background: var(--surface);
+      text-decoration: line-through;
+      text-decoration-thickness: 2px;
+    }
+
+    /* operator pad */
+    .op-pad {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 8px;
+    }
+    .op-btn {
+      height: 48px;
+      display: grid; place-items: center;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--text);
+      font-size: 22px; font-weight: 800;
+      cursor: pointer;
+      transition: transform .12s ease, background .2s ease;
+      user-select: none;
+    }
+    .op-btn:active { transform: scale(.92); background: var(--grad-soft); }
+    .op-btn.par { color: var(--text-dim); }
+    .op-btn.del { color: var(--bad); font-size: 18px; }
+
+    /* action row */
+    .actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .actions .btn { height: 44px; font-size: 14px; padding: 0; }
+    .actions-wide {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 10px;
+    }
+    .actions-wide .btn { height: 42px; font-size: 13px; padding: 0; }
+
+    .hint-line {
+      text-align: center; color: var(--text-mute); font-size: 12px;
+      line-height: 1.5;
+    }
+    .hint-line .kbd { font-size: 11px; }
+
+    /* solution overlay body */
+    .sol-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 14px 10px;
+      font-size: 22px; font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 1px;
+      color: var(--good);
+      word-break: break-all;
+    }
+  </style>
+</head>
+<body>
+  <div class="game-shell">
+    <div class="game-topbar">
+      <a class="back" href="/" aria-label="返回游戏大厅">‹</a>
+      <div class="title">24点<small>四数算二十四</small></div>
+      <div class="stats">
+        <div class="stat" data-stat="score"><span class="k">得分</span><span class="v">0</span></div>
+        <div class="stat" data-stat="best"><span class="k">最高</span><span class="v">0</span></div>
+      </div>
+      <button class="icon-btn" id="theme" aria-label="切换主题">◐</button>
+      <button class="icon-btn" id="help" aria-label="规则">?</button>
+    </div>
+
+    <div class="game-stage">
+      <div class="game-board">
+        <div class="goal-strip">
+          <div>
+            <div class="goal-label">目标</div>
+            <div class="goal-target">= 24</div>
+          </div>
+          <div class="goal-streak"><span class="flame">🔥</span> 连胜 <span id="streak">0</span></div>
+        </div>
+
+        <div class="expr-box empty" id="expr"></div>
+        <div class="expr-result" id="result">&nbsp;</div>
+
+        <div class="num-row" id="nums"></div>
+
+        <div class="op-pad" id="ops">
+          <button class="op-btn" data-op="+">+</button>
+          <button class="op-btn" data-op="-">−</button>
+          <button class="op-btn" data-op="×">×</button>
+          <button class="op-btn" data-op="÷">÷</button>
+          <button class="op-btn par" data-op="(">(</button>
+          <button class="op-btn par" data-op=")">)</button>
+        </div>
+
+        <div class="actions-wide">
+          <button class="btn ghost" id="del">退一格</button>
+          <button class="btn ghost" id="clear">清空</button>
+          <button class="btn ghost" id="hint">提示</button>
+        </div>
+        <div class="actions">
+          <button class="btn" id="skip">跳过</button>
+          <button class="btn primary" id="submit">提交</button>
+        </div>
+
+        <div class="hint-line">
+          点数字使用一次（用完置灰），用 + − × ÷ 与括号组成等于 24 的算式。<br>
+          <span class="kbd">1-9</span> 数字 <span class="kbd">+</span> <span class="kbd">-</span> <span class="kbd">*</span> <span class="kbd">/</span> <span class="kbd">(</span> <span class="kbd">)</span> <span class="kbd">⌫</span> 退格 <span class="kbd">Enter</span> 提交
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/assets/game.js"></script>
+  <script>
+  (function () {
+    "use strict";
+    const KEY = "24point";
+    const TARGET = 24;
+    const EPS = 1e-6;
+
+    const $ = id => document.getElementById(id);
+    const exprEl = $("expr");
+    const resultEl = $("result");
+    const numsEl = $("nums");
+    const streakEl = $("streak");
+    const scoreEl = document.querySelector('[data-stat="score"] .v');
+    const bestEl = document.querySelector('[data-stat="best"] .v');
+
+    let state = null; // {nums:[4], used:[4 bool], tokens:[{t,numIdx?}]}
+    let score = 0;
+    let streak = 0;
+    let best = SG.best(KEY);
+    bestEl.textContent = best;
+
+    /* ---------- 24-point solver (brute force, exact rationals via float+eps) ---------- */
+    function solve24(nums) {
+      const items = nums.map(n => ({ v: n, e: String(n) }));
+      return dfs(items);
+      function dfs(arr) {
+        if (arr.length === 1) {
+          return Math.abs(arr[0].v - TARGET) < EPS ? arr[0].e : null;
+        }
+        for (let i = 0; i < arr.length; i++) {
+          for (let j = 0; j < arr.length; j++) {
+            if (i === j) continue;
+            const a = arr[i], b = arr[j];
+            const rest = [];
+            for (let k = 0; k < arr.length; k++) if (k !== i && k !== j) rest.push(arr[k]);
+            const combos = [
+              { v: a.v + b.v, e: "(" + a.e + "+" + b.e + ")" },
+              { v: a.v - b.v, e: "(" + a.e + "-" + b.e + ")" },
+              { v: a.v * b.v, e: "(" + a.e + "*" + b.e + ")" },
+            ];
+            if (Math.abs(b.v) > EPS) combos.push({ v: a.v / b.v, e: "(" + a.e + "/" + b.e + ")" });
+            for (const c of combos) {
+              const res = dfs(rest.concat([c]));
+              if (res) return res;
+            }
+          }
+        }
+        return null;
+      }
+    }
+
+    /* pretty-print a solver expression: * -> ×, / -> ÷, strip outer parens */
+    function prettyExpr(e) {
+      let s = e;
+      // strip one layer of outer parens if balanced
+      if (s[0] === "(" && s[s.length - 1] === ")") {
+        let depth = 0, ok = true;
+        for (let i = 0; i < s.length; i++) {
+          if (s[i] === "(") depth++;
+          else if (s[i] === ")") depth--;
+          if (depth === 0 && i < s.length - 1) { ok = false; break; }
+        }
+        if (ok) s = s.slice(1, -1);
+      }
+      return s.replace(/\*/g, "×").replace(/\//g, "÷");
+    }
+
+    /* ---------- puzzle generation (guaranteed solvable) ---------- */
+    function genPuzzle() {
+      let nums, sol, guard = 0;
+      do {
+        nums = [];
+        for (let i = 0; i < 4; i++) nums.push(1 + Math.floor(Math.random() * 13));
+        sol = solve24(nums);
+        guard++;
+      } while (!sol && guard < 5000);
+      if (!sol) { nums = [3, 3, 8, 8]; sol = solve24(nums); } // fallback (3 3 8 8 -> 8/(3-8/3)=24)
+      return { nums, sol: prettyExpr(sol) };
+    }
+
+    /* ---------- state ---------- */
+    function newRound() {
+      const p = genPuzzle();
+      state = {
+        nums: p.nums,
+        sol: p.sol,
+        used: [false, false, false, false],
+        tokens: [],
+      };
+      resultEl.textContent = " ";
+      resultEl.className = "expr-result";
+      exprEl.classList.remove("ok", "bad", "shake");
+      renderNums();
+      renderExpr();
+      navigator.vibrate?.(8);
+    }
+
+    function renderNums() {
+      numsEl.innerHTML = "";
+      state.nums.forEach((n, i) => {
+        const b = document.createElement("button");
+        b.className = "num-tile" + (state.used[i] ? " used" : "");
+        b.textContent = n;
+        b.setAttribute("aria-label", "数字 " + n);
+        b.addEventListener("click", () => pushNum(i));
+        numsEl.appendChild(b);
+      });
+    }
+
+    function renderExpr() {
+      exprEl.innerHTML = "";
+      if (state.tokens.length === 0) {
+        exprEl.classList.add("empty");
+        return;
+      }
+      exprEl.classList.remove("empty");
+      state.tokens.forEach(t => {
+        const span = document.createElement("span");
+        span.className = "tok " + t.cls;
+        span.textContent = t.text;
+        exprEl.appendChild(span);
+      });
+    }
+
+    function pushNum(i) {
+      if (state.used[i]) return;
+      state.used[i] = true;
+      state.tokens.push({ type: "num", idx: i, text: String(state.nums[i]), cls: "num" });
+      resultEl.textContent = " ";
+      resultEl.className = "expr-result";
+      exprEl.classList.remove("ok", "bad");
+      renderNums();
+      renderExpr();
+      navigator.vibrate?.(6);
+    }
+
+    function pushOp(op) {
+      const map = { "+": { text: "+", cls: "op" }, "-": { text: "−", cls: "op" },
+                     "×": { text: "×", cls: "op" }, "÷": { text: "÷", cls: "op" },
+                     "(": { text: "(", cls: "par" }, ")": { text: ")", cls: "par" } };
+      const m = map[op];
+      state.tokens.push({ type: "op", op, text: m.text, cls: m.cls });
+      resultEl.textContent = " ";
+      resultEl.className = "expr-result";
+      exprEl.classList.remove("ok", "bad");
+      renderExpr();
+      navigator.vibrate?.(6);
+    }
+
+    function delLast() {
+      const t = state.tokens.pop();
+      if (t && t.type === "num") state.used[t.idx] = false;
+      resultEl.textContent = " ";
+      resultEl.className = "expr-result";
+      exprEl.classList.remove("ok", "bad");
+      renderNums();
+      renderExpr();
+    }
+
+    function clearAll() {
+      state.used = [false, false, false, false];
+      state.tokens = [];
+      resultEl.textContent = " ";
+      resultEl.className = "expr-result";
+      exprEl.classList.remove("ok", "bad");
+      renderNums();
+      renderExpr();
+    }
+
+    /* ---------- evaluate the user expression ---------- */
+    function evalTokens() {
+      // build raw expression string with * /
+      let raw = "";
+      state.tokens.forEach(t => {
+        if (t.type === "num") raw += t.text;
+        else if (t.op === "×") raw += "*";
+        else if (t.op === "÷") raw += "/";
+        else raw += t.op;
+      });
+      // whitelist: digits, + - * / ( ) and whitespace only
+      if (!/^[0-9+\-*/().\s]*$/.test(raw)) return { ok: false, err: "非法字符" };
+      if (raw.trim() === "") return { ok: false, err: "空算式" };
+      let val;
+      try {
+        val = Function('"use strict";return (' + raw + ")")();
+      } catch (e) {
+        return { ok: false, err: "算式不完整" };
+      }
+      if (typeof val !== "number" || !isFinite(val)) return { ok: false, err: "算式无效" };
+      return { ok: true, val, raw };
+    }
+
+    function liveResult() {
+      const r = evalTokens();
+      if (!r.ok) { resultEl.textContent = " "; resultEl.className = "expr-result"; return; }
+      const near = Math.abs(r.val - TARGET) < EPS;
+      resultEl.textContent = "= " + (Number.isInteger(r.val) ? r.val : +r.val.toFixed(4));
+      resultEl.className = "expr-result " + (near ? "good" : "bad");
+    }
+
+    function submit() {
+      // require all 4 numbers used
+      if (state.used.some(u => !u)) {
+        SG.toast("请用上全部四个数字");
+        shake();
+        return;
+      }
+      const r = evalTokens();
+      if (!r.ok) {
+        SG.toast(r.err || "算式无效");
+        shake();
+        return;
+      }
+      if (Math.abs(r.val - TARGET) < EPS) {
+        win();
+      } else {
+        resultEl.textContent = "= " + (Number.isInteger(r.val) ? r.val : +r.val.toFixed(4)) + " ✗";
+        resultEl.className = "expr-result bad";
+        exprEl.classList.add("bad");
+        shake();
+        streak = 0;
+        streakEl.textContent = streak;
+        SG.toast("不等于 24，再试试");
+        navigator.vibrate?.([30, 40, 30]);
+      }
+    }
+
+    function shake() {
+      exprEl.classList.remove("shake");
+      void exprEl.offsetWidth;
+      exprEl.classList.add("shake");
+    }
+
+    function win() {
+      streak++;
+      const gain = 10 + (streak - 1) * 5;
+      score += gain;
+      if (score > best) { best = score; SG.best(KEY, best); bestEl.textContent = best; }
+      scoreEl.textContent = score;
+      streakEl.textContent = streak;
+      exprEl.classList.add("ok");
+      exprEl.classList.add("flash");
+      navigator.vibrate?.([20, 30, 40]);
+      const ov = SG.overlay({
+        title: "正确！+" + gain,
+        body: state.nums.join(" ") + " → 24<br><br><div class=\"sol-box\">" + tokensToPretty() + " = 24</div>",
+        buttons: [
+          { text: "下一题", kind: "primary", onClick: () => { ov.hide(); newRound(); } },
+        ],
+      });
+      ov.show();
+    }
+
+    function tokensToPretty() {
+      return state.tokens.map(t => t.text).join("");
+    }
+
+    function showHint() {
+      const ov = SG.overlay({
+        title: "一个解法",
+        body: "这题的一个参考解法：<div class=\"sol-box\">" + state.sol + " = 24</div><br>看了答案本题不计连胜。",
+        buttons: [
+          { text: "继续作答", kind: "", onClick: () => ov.hide() },
+          { text: "下一题", kind: "primary", onClick: () => { ov.hide(); streak = 0; streakEl.textContent = streak; newRound(); } },
+        ],
+      });
+      ov.show();
+    }
+
+    function skip() {
+      const ov = SG.overlay({
+        title: "跳过本题",
+        body: "参考解法：<div class=\"sol-box\">" + state.sol + " = 24</div><br>连胜清零。",
+        buttons: [
+          { text: "取消", kind: "", onClick: () => ov.hide() },
+          { text: "下一题", kind: "primary", onClick: () => { ov.hide(); streak = 0; streakEl.textContent = streak; newRound(); } },
+        ],
+      });
+      ov.show();
+    }
+
+    /* ---------- rules ---------- */
+    function showRules() {
+      const ov = SG.overlay({
+        title: "24点玩法",
+        body: "随机给出 4 个 1-13 的数字（保证有解）。<br>" +
+              "用这 4 个数字各一次，配合 <b>+ − × ÷</b> 与 <b>括号</b>，组成结果等于 <b>24</b> 的算式。<br><br>" +
+              "• 答对一题 +10 分，连胜每多一关额外 +5 分。<br>" +
+              "• 答错或跳过，连胜清零。<br>" +
+              "• 最高分自动保存。<br>" +
+              "• 点「提示」可查看一个解法（看后本题不计连胜）。",
+        buttons: [{ text: "开始", kind: "primary", onClick: () => ov.hide() }],
+      });
+      ov.show();
+    }
+
+    /* ---------- wire up ---------- */
+    document.getElementById("theme").addEventListener("click", SG.toggleTheme);
+    document.getElementById("help").addEventListener("click", showRules);
+    $("submit").addEventListener("click", submit);
+    $("skip").addEventListener("click", skip);
+    $("hint").addEventListener("click", showHint);
+    $("clear").addEventListener("click", clearAll);
+    $("del").addEventListener("click", delLast);
+    document.querySelectorAll("#ops .op-btn").forEach(b => {
+      b.addEventListener("click", () => pushOp(b.dataset.op));
+    });
+
+    // live preview of current expression value
+    exprEl.addEventListener("click", () => {}); // no-op, kept for future
+    ["submit", "skip", "hint", "clear", "del"].forEach(id => {
+      $(id).addEventListener("click", liveResult);
+    });
+    numsEl.addEventListener("click", liveResult, true);
+    document.querySelectorAll("#ops .op-btn").forEach(b => {
+      b.addEventListener("click", liveResult);
+    });
+
+    // keyboard
+    document.addEventListener("keydown", e => {
+      const k = e.key;
+      if (k >= "0" && k <= "9") {
+        // find first unused num tile matching this digit (single-digit only; 10-13 need clicking)
+        const val = parseInt(k, 10);
+        for (let i = 0; i < state.nums.length; i++) {
+          if (!state.used[i] && state.nums[i] === val) { pushNum(i); liveResult(); return; }
+        }
+      } else if (k === "+" ) { pushOp("+"); liveResult(); }
+      else if (k === "-") { pushOp("-"); liveResult(); }
+      else if (k === "*" || k === "x" || k === "X") { pushOp("×"); liveResult(); }
+      else if (k === "/") { pushOp("÷"); liveResult(); }
+      else if (k === "(" ) { pushOp("("); liveResult(); }
+      else if (k === ")") { pushOp(")"); liveResult(); }
+      else if (k === "Backspace") { e.preventDefault(); delLast(); liveResult(); }
+      else if (k === "Enter") { e.preventDefault(); submit(); }
+    });
+
+    // prevent double-tap zoom / page scroll bounce
+    document.addEventListener("dblclick", e => e.preventDefault());
+    document.addEventListener("gesturestart", e => e.preventDefault());
+
+    // start
+    newRound();
+    // show rules once per session
+    if (!sessionStorage.getItem("slowpapa-24point-seen")) {
+      sessionStorage.setItem("slowpapa-24point-seen", "1");
+      showRules();
+    }
+  })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>迷宫 Maze · slowpapa</title>
+<meta name="description" content="随机生成的迷宫 H5 小游戏：递归回溯生成，从左上走到右下出口。三档难度（小/中/大），方向键 / 滑动 / 屏幕方向键操控，步数与计时，可显示最短路径提示。">
+<link rel="stylesheet" href="/assets/game.css">
+<style>
+  /* ---- Maze-specific ---- */
+  .maze-head {
+    display:flex; align-items:center; justify-content:space-between;
+    gap:10px; margin-bottom:10px; flex-wrap:wrap;
+  }
+  .maze-head .segment button { padding:7px 12px; }
+  .maze-meta {
+    display:flex; gap:14px; align-items:center;
+    font-size:12px; color:var(--text-mute); font-weight:700;
+  }
+  .maze-meta b { color:var(--text); font-size:14px; font-variant-numeric:tabular-nums; }
+
+  #mazeCanvas {
+    display:block; width:100%; height:auto;
+    touch-action:none; border-radius:var(--radius-sm);
+    background:var(--surface);
+    border:1px solid var(--border);
+  }
+  .ctrls { display:flex; gap:10px; justify-content:center; margin-top:14px; flex-wrap:wrap; }
+  .ctrls .btn.hint-on { background:var(--grad-soft); border-color:transparent; color:var(--text); }
+  .kbd-hint { text-align:center; color:var(--text-mute); font-size:11px; margin-top:10px; }
+</style>
+</head>
+<body>
+<div class="game-shell">
+  <div class="game-topbar">
+    <a class="back" href="/" aria-label="返回游戏大厅">‹</a>
+    <div class="title">迷宫<small>Maze · 递归回溯生成</small></div>
+    <div class="stats">
+      <div class="stat" data-stat="step"><span class="k">步数</span><span class="v" id="stepV">0</span></div>
+      <div class="stat" data-stat="time"><span class="k">用时</span><span class="v" id="timeV">00:00</span></div>
+    </div>
+    <button class="icon-btn" id="themeBtn" aria-label="切换主题">◐</button>
+    <button class="icon-btn" id="helpBtn" aria-label="规则">?</button>
+  </div>
+
+  <div class="game-stage">
+    <div class="game-board">
+      <div class="maze-head">
+        <div class="segment" id="diffSeg" role="group" aria-label="难度">
+          <button data-size="11" aria-pressed="true">小</button>
+          <button data-size="15" aria-pressed="false">中</button>
+          <button data-size="21" aria-pressed="false">大</button>
+        </div>
+        <div class="maze-meta">
+          <span>最佳 <b id="bestV">—</b></span>
+        </div>
+      </div>
+      <canvas id="mazeCanvas"></canvas>
+      <div class="ctrls">
+        <button class="btn sm" id="hintBtn">显示路径</button>
+        <button class="btn sm" id="newBtn">新迷宫</button>
+      </div>
+      <div class="kbd-hint">方向键 / WASD 移动 · 滑动棋盘 · 屏幕方向键</div>
+    </div>
+  </div>
+
+  <div class="game-stage" style="flex:0; padding-top:0;">
+    <div class="touch-pad dir" id="pad">
+      <button class="pad-btn up" data-dir="up" aria-label="上">▲</button>
+      <button class="pad-btn left" data-dir="left" aria-label="左">◀</button>
+      <div class="pad-blank"></div>
+      <button class="pad-btn right" data-dir="right" aria-label="右">▶</button>
+      <button class="pad-btn down" data-dir="down" aria-label="下">▼</button>
+    </div>
+  </div>
+</div>
+
+<script src="/assets/game.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  const KEY = "maze";
+  const canvas = document.getElementById("mazeCanvas");
+  const ctx = canvas.getContext("2d");
+  const stepV = document.getElementById("stepV");
+  const timeV = document.getElementById("timeV");
+  const bestV = document.getElementById("bestV");
+  const diffSeg = document.getElementById("diffSeg");
+
+  // ---------- State ----------
+  let N = 11;            // grid dimension (odd)
+  let grid = [];          // 0 passage, 1 wall
+  let px = 1, py = 1;     // player grid pos
+  let ex = 0, ey = 0;     // exit grid pos
+  let steps = 0;
+  let started = false;    // timer started on first move
+  let startTs = 0;
+  let elapsed = 0;        // ms
+  let won = false;
+  let showPath = false;
+  let pathCells = [];     // BFS shortest path from player to exit (list of [x,y])
+  let DPR = 1, W = 0, H = 0, cell = 0;
+
+  // animated player render position (cell units)
+  let rx = 1, ry = 1;
+  let moving = false;
+
+  let palette = {};
+
+  // ---------- Palette ----------
+  function loadPalette() {
+    const cs = getComputedStyle(document.documentElement);
+    const get = (n) => cs.getPropertyValue(n).trim();
+    palette = {
+      text:    get("--text")   || "#f4f3ff",
+      dim:     get("--text-dim") || "#b9b6d8",
+      mute:    get("--text-mute") || "#8a86ad",
+      accent:  get("--accent") || "#8b5cf6",
+      accent2: get("--accent-2") || "#ec4899",
+      accent3: get("--accent-3") || "#38bdf8",
+      good:    get("--good")   || "#34d399",
+      surface: get("--surface") || "rgba(255,255,255,.06)",
+      surface2:get("--surface-2") || "rgba(255,255,255,.10)",
+      border:  get("--border") || "rgba(255,255,255,.12)",
+    };
+  }
+
+  // ---------- Maze generation (recursive backtracking, iterative) ----------
+  function generate(n) {
+    N = n;
+    // full walls
+    grid = [];
+    for (let y = 0; y < N; y++) {
+      grid[y] = [];
+      for (let x = 0; x < N; x++) grid[y][x] = 1;
+    }
+    // carve from (1,1)
+    const stack = [[1, 1]];
+    grid[1][1] = 0;
+    const dirs = [[0,-2],[0,2],[-2,0],[2,0]];
+    while (stack.length) {
+      const [cx, cy] = stack[stack.length - 1];
+      // collect unvisited neighbours (2 cells away)
+      const opts = [];
+      for (const [dx, dy] of dirs) {
+        const nx = cx + dx, ny = cy + dy;
+        if (nx > 0 && nx < N - 1 && ny > 0 && ny < N - 1 && grid[ny][nx] === 1) {
+          opts.push([nx, ny, dx, dy]);
+        }
+      }
+      if (!opts.length) { stack.pop(); continue; }
+      const [nx, ny, dx, dy] = opts[(Math.random() * opts.length) | 0];
+      grid[cy + dy / 2][cx + dx / 2] = 0; // remove wall between
+      grid[ny][nx] = 0;
+      stack.push([nx, ny]);
+    }
+    // ensure exit cell open
+    px = 1; py = 1;
+    ex = N - 2; ey = N - 2;
+    grid[ey][ex] = 0;
+    rx = px; ry = py;
+    steps = 0;
+    started = false;
+    elapsed = 0;
+    won = false;
+    pathCells = [];
+    updateHud();
+    computePath();
+  }
+
+  // ---------- BFS shortest path from player to exit ----------
+  function computePath() {
+    pathCells = [];
+    if (won) return;
+    const prev = {};
+    const key0 = px + "," + py;
+    const q = [[px, py]];
+    const seen = new Set([key0]);
+    let found = false;
+    while (q.length) {
+      const [cx, cy] = q.shift();
+      if (cx === ex && cy === ey) { found = true; break; }
+      const ns = [[0,-1],[0,1],[-1,0],[1,0]];
+      for (const [dx, dy] of ns) {
+        const nx = cx + dx, ny = cy + dy;
+        if (nx < 0 || ny < 0 || nx >= N || ny >= N) continue;
+        if (grid[ny][nx] === 1) continue;
+        const k = nx + "," + ny;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        prev[k] = cx + "," + cy;
+        q.push([nx, ny]);
+      }
+    }
+    if (!found) return;
+    // reconstruct
+    let cur = ex + "," + ey;
+    const seq = [[ex, ey]];
+    while (cur !== key0) {
+      const p = prev[cur];
+      if (!p) break;
+      seq.push(p.split(",").map(Number));
+      cur = p;
+    }
+    seq.reverse();
+    pathCells = seq;
+  }
+
+  // ---------- Resize / DPR ----------
+  function resize() {
+    const rect = canvas.getBoundingClientRect();
+    const size = Math.min(rect.width, 460);
+    const css = Math.max(240, size);
+    DPR = window.devicePixelRatio || 1;
+    canvas.style.height = css + "px";
+    canvas.width = Math.round(css * DPR);
+    canvas.height = Math.round(css * DPR);
+    W = css; H = css;
+    cell = W / N;
+    loadPalette();
+  }
+
+  // ---------- Draw ----------
+  function draw() {
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+
+    // floor base
+    ctx.fillStyle = palette.surface;
+    ctx.fillRect(0, 0, W, H);
+
+    // walls
+    for (let y = 0; y < N; y++) {
+      for (let x = 0; x < N; x++) {
+        if (grid[y][x] === 1) {
+          const gx = x * cell, gy = y * cell;
+          const grad = ctx.createLinearGradient(gx, gy, gx + cell, gy + cell);
+          grad.addColorStop(0, "rgba(139,92,246,0.30)");
+          grad.addColorStop(1, "rgba(236,72,153,0.24)");
+          ctx.fillStyle = grad;
+          ctx.fillRect(gx, gy, cell, cell);
+        }
+      }
+    }
+
+    // shortest path hint
+    if (showPath && pathCells.length) {
+      ctx.save();
+      ctx.fillStyle = "rgba(56,189,248,0.18)";
+      for (const [x, y] of pathCells) {
+        if (x === px && y === py) continue;
+        if (x === ex && y === ey) continue;
+        const r = cell * 0.16;
+        ctx.beginPath();
+        ctx.arc(x * cell + cell / 2, y * cell + cell / 2, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    // exit marker (pulsing ring)
+    {
+      const t = performance.now() / 600;
+      const pulse = 0.5 + 0.5 * Math.sin(t);
+      const ccx = ex * cell + cell / 2;
+      const ccy = ey * cell + cell / 2;
+      ctx.save();
+      ctx.strokeStyle = palette.good;
+      ctx.globalAlpha = 0.45 + 0.4 * pulse;
+      ctx.lineWidth = Math.max(2, cell * 0.10);
+      ctx.beginPath();
+      ctx.arc(ccx, ccy, cell * (0.22 + 0.06 * pulse), 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = palette.good;
+      ctx.beginPath();
+      ctx.arc(ccx, ccy, cell * 0.14, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // player (animated)
+    // ease rx,ry toward px,py
+    const ease = 0.28;
+    rx += (px - rx) * ease;
+    ry += (py - ry) * ease;
+    if (Math.abs(px - rx) < 0.01 && Math.abs(py - ry) < 0.01) {
+      rx = px; ry = py; moving = false;
+    } else {
+      moving = true;
+    }
+    const pcx = rx * cell + cell / 2;
+    const pcy = ry * cell + cell / 2;
+    const pr = cell * 0.30;
+    ctx.save();
+    ctx.shadowColor = "rgba(0,0,0,.4)";
+    ctx.shadowBlur = cell * 0.18;
+    const pg = ctx.createRadialGradient(pcx - pr * 0.3, pcy - pr * 0.3, pr * 0.2, pcx, pcy, pr);
+    pg.addColorStop(0, "#ffffff");
+    pg.addColorStop(0.5, palette.accent2 || "#ec4899");
+    pg.addColorStop(1, palette.accent || "#8b5cf6");
+    ctx.fillStyle = pg;
+    ctx.beginPath();
+    ctx.arc(pcx, pcy, pr, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    // timer update
+    if (started && !won) {
+      elapsed = performance.now() - startTs;
+      timeV.textContent = fmtTime(elapsed);
+    }
+  }
+
+  function fmtTime(ms) {
+    const s = Math.floor(ms / 1000);
+    const m = Math.floor(s / 60);
+    const ss = s % 60;
+    return String(m).padStart(2, "0") + ":" + String(ss).padStart(2, "0");
+  }
+
+  function loop() {
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  // ---------- HUD ----------
+  function updateHud() {
+    stepV.textContent = steps;
+    timeV.textContent = fmtTime(elapsed);
+    const b = bestForSize(N);
+    bestV.textContent = b ? b + " 步" : "—";
+  }
+
+  function bestForSize(n) {
+    return parseInt(localStorage.getItem("slowpapa-maze-best-" + n) || "0", 10) || 0;
+  }
+  function setBest(n, v) {
+    const cur = bestForSize(n);
+    if (v < cur || cur === 0) {
+      localStorage.setItem("slowpapa-maze-best-" + n, String(v));
+      return true;
+    }
+    return false;
+  }
+
+  // ---------- Move ----------
+  const DIRS = {
+    up:    { dx: 0,  dy: -1 },
+    down:  { dx: 0,  dy: 1 },
+    left:  { dx: -1, dy: 0 },
+    right: { dx: 1,  dy: 0 }
+  };
+  function move(dir) {
+    if (won) return;
+    const d = DIRS[dir]; if (!d) return;
+    const nx = px + d.dx, ny = py + d.dy;
+    if (nx < 0 || ny < 0 || nx >= N || ny >= N) return;
+    if (grid[ny][nx] === 1) return;
+    px = nx; py = ny;
+    steps++;
+    if (!started) { started = true; startTs = performance.now(); }
+    if (showPath) computePath();
+    updateHud();
+    navigator.vibrate?.(8);
+    if (px === ex && py === ey) onWin();
+  }
+
+  function onWin() {
+    won = true;
+    elapsed = performance.now() - startTs;
+    navigator.vibrate?.([20, 60, 20]);
+    const isBest = setBest(N, steps);
+    updateHud();
+    const ov = SG.overlay({
+      title: "到达出口！",
+      score: steps + " 步",
+      body: "用时 " + fmtTime(elapsed) + " · " + sizeName(N) + " 迷宫" +
+            (isBest ? "<br><b style='color:var(--good)'>新最佳步数！</b>" : ""),
+      buttons: [
+        { text: "再来一局", kind: "", onClick: () => { ov.hide(); generate(N); } },
+        { text: "换难度", kind: "primary", onClick: () => { ov.hide(); } }
+      ]
+    });
+    ov.show();
+  }
+
+  function sizeName(n) {
+    return n === 11 ? "小" : n === 15 ? "中" : "大";
+  }
+
+  // ---------- Input ----------
+  const keyMap = {
+    ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right",
+    w: "up", s: "down", a: "left", d: "right",
+    W: "up", S: "down", A: "left", D: "right"
+  };
+  window.addEventListener("keydown", e => {
+    if (keyMap[e.key]) { e.preventDefault(); move(keyMap[e.key]); return; }
+    if (e.key === "r" || e.key === "R") { e.preventDefault(); generate(N); }
+  });
+
+  SG.swipe(canvas, dir => move(dir));
+
+  document.getElementById("pad").addEventListener("click", e => {
+    const b = e.target.closest("[data-dir]");
+    if (b) move(b.dataset.dir);
+  });
+
+  // difficulty segmented control
+  diffSeg.addEventListener("click", e => {
+    const b = e.target.closest("button[data-size]");
+    if (!b) return;
+    const size = parseInt(b.dataset.size, 10);
+    [...diffSeg.children].forEach(c => c.setAttribute("aria-pressed", "false"));
+    b.setAttribute("aria-pressed", "true");
+    generate(size);
+  });
+
+  // buttons
+  const hintBtn = document.getElementById("hintBtn");
+  hintBtn.addEventListener("click", () => {
+    showPath = !showPath;
+    hintBtn.textContent = showPath ? "隐藏路径" : "显示路径";
+    hintBtn.classList.toggle("hint-on", showPath);
+    if (showPath) computePath();
+  });
+  document.getElementById("newBtn").addEventListener("click", () => generate(N));
+  document.getElementById("themeBtn").addEventListener("click", () => {
+    SG.toggleTheme();
+    loadPalette();
+  });
+  document.getElementById("helpBtn").addEventListener("click", () => {
+    const ov = SG.overlay({
+      title: "迷宫规则",
+      body: "从左上角的起点走到右下角的发光出口即可获胜。<br><br>" +
+            "操作：方向键 / WASD · 棋盘滑动 · 屏幕方向键<br>" +
+            "点击「显示路径」可用 BFS 查看最短路线提示<br>" +
+            "难度可选 小 11×11 / 中 15×15 / 大 21×21<br>" +
+            "R 键 重新生成迷宫",
+      buttons: [{ text: "开始", kind: "primary", onClick: () => ov.hide() }]
+    });
+    ov.show();
+  });
+
+  // prevent pinch / double-tap zoom
+  document.addEventListener("gesturestart", e => e.preventDefault());
+  let lastTap = 0;
+  document.addEventListener("touchend", e => {
+    const now = Date.now();
+    if (now - lastTap < 300) e.preventDefault();
+    lastTap = now;
+  }, { passive: false });
+
+  window.addEventListener("resize", () => { resize(); });
+
+  // boot
+  resize();
+  generate(11);
+  loop();
+})();
+</script>
+</body>
+</html>

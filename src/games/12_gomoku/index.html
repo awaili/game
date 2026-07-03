@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>五子棋 - Slowpapa</title>
+  <meta name="description" content="在线五子棋人机对弈，15×15 棋盘，启发式 AI 中等难度，可选先后手、悔棋、重开。Slowpapa 益智游戏大厅。">
+  <link rel="stylesheet" href="/assets/game.css">
+  <style>
+    /* ---- gomoku board (inline, theme-aware) ---- */
+    :root {
+      --board-bg: #d6a86a;      /* warm wood, dark theme */
+      --board-bg-2: #c8995a;
+      --board-line: #5d4037;
+      --star: #5d4037;
+      --stone-black: #1a1a22;
+      --stone-white: #f4f3ff;
+    }
+    :root[data-theme="light"] {
+      --board-bg: #e8c98a;
+      --board-bg-2: #dcb87a;
+      --board-line: #6b4226;
+      --star: #6b4226;
+      --stone-black: #15151c;
+      --stone-white: #fbfbff;
+    }
+
+    .game-board { display: flex; flex-direction: column; gap: 12px; }
+    #board {
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      border-radius: 10px;
+      touch-action: none;
+      background: linear-gradient(135deg, var(--board-bg) 0%, var(--board-bg-2) 100%);
+      box-shadow: inset 0 0 0 1px var(--border), 0 8px 22px -10px rgba(0,0,0,.5);
+    }
+
+    .panel { display: flex; flex-direction: column; gap: 12px; }
+
+    .turn-row {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      font-size: 14px; color: var(--text-dim); font-weight: 600;
+    }
+    .turn-row .dot {
+      width: 18px; height: 18px; border-radius: 50%;
+      border: 1px solid var(--border);
+      box-shadow: 0 1px 3px rgba(0,0,0,.3);
+    }
+    .turn-row .dot.black { background: var(--stone-black); }
+    .turn-row .dot.white { background: var(--stone-white); }
+    .turn-row #turn-text { color: var(--text); font-weight: 800; }
+    .think {
+      margin-left: auto;
+      font-size: 12px; font-weight: 700; color: var(--accent-3);
+      display: inline-flex; align-items: center; gap: 6px;
+    }
+    .think[hidden] { display: none !important; }
+    .think::after {
+      content: ""; width: 6px; height: 6px; border-radius: 50%;
+      background: var(--accent-3); animation: blink 1s ease-in-out infinite;
+    }
+    @keyframes blink { 0%,100% { opacity: .3; } 50% { opacity: 1; } }
+
+    .seg-wrap { display: flex; justify-content: center; }
+    .action-row { margin-top: 0; }
+    .btn:disabled { opacity: .4; cursor: not-allowed; }
+
+    .hint { margin: 0; }
+  </style>
+</head>
+<body>
+  <div class="game-shell">
+    <div class="game-topbar">
+      <a class="back" href="/" aria-label="返回游戏大厅">‹</a>
+      <div class="title">五子棋<small>人机对弈 · 中等难度</small></div>
+      <div class="stats">
+        <div class="stat" data-stat="streak">
+          <span class="k">连胜</span><span class="v" id="streak-v">0</span>
+        </div>
+      </div>
+      <button class="icon-btn" id="theme-btn" aria-label="切换主题">◑</button>
+      <button class="icon-btn" id="help-btn" aria-label="规则">?</button>
+    </div>
+
+    <div class="game-stage">
+      <div class="game-board">
+        <canvas id="board" aria-label="五子棋棋盘"></canvas>
+        <div class="panel">
+          <div class="turn-row">
+            <span class="dot" id="turn-dot"></span>
+            <span id="turn-text">黑方 行棋</span>
+            <span class="think" id="think" hidden>AI 思考中</span>
+          </div>
+          <div class="seg-wrap">
+            <div class="segment" id="first-seg" role="group" aria-label="先后手选择">
+              <button data-first="black" aria-pressed="true">执黑先行</button>
+              <button data-first="white" aria-pressed="false">执白后手</button>
+            </div>
+          </div>
+          <div class="action-row">
+            <button class="btn" id="undo-btn">悔棋</button>
+            <button class="btn primary" id="restart-btn">重开</button>
+          </div>
+          <p class="hint">点击交叉点落子 · 黑先 · 连成五子获胜</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/assets/game.js"></script>
+  <script>
+  "use strict";
+  /* ====== 常量 ====== */
+  const SIZE = 15;
+  const EMPTY = 0, BLACK = 1, WHITE = 2;
+  const KEY = "gomoku";
+
+  /* ====== 状态 ====== */
+  let board = [];           // [r][c] -> 0/1/2
+  let history = [];         // [{r,c,role}]
+  let turn = BLACK;         // 当前该谁下
+  let playerRole = BLACK;   // 玩家执子
+  let aiRole = WHITE;
+  let gameOver = false;
+  let winningCells = null;  // 胜负高亮
+  let lastMove = null;      // {r,c}
+  let aiThinking = false;
+  let streak = 0;           // 当前连胜
+
+  /* ====== DOM ====== */
+  const canvas = document.getElementById("board");
+  const ctx = canvas.getContext("2d");
+  const turnDot = document.getElementById("turn-dot");
+  const turnText = document.getElementById("turn-text");
+  const thinkEl = document.getElementById("think");
+  const streakV = document.getElementById("streak-v");
+  const undoBtn = document.getElementById("undo-btn");
+
+  /* ====== 棋盘尺寸 / DPR 清晰 ====== */
+  let dpr = 1, cssSize = 0, pad = 0, cell = 0;
+  function resize() {
+    const rect = canvas.getBoundingClientRect();
+    cssSize = Math.max(1, rect.width);
+    dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(cssSize * dpr);
+    canvas.height = Math.round(cssSize * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    pad = cssSize / (SIZE + 1);          // 边距
+    cell = (cssSize - 2 * pad) / (SIZE - 1);
+    draw();
+  }
+
+  function gridToPx(r, c) {
+    return { x: pad + c * cell, y: pad + r * cell };
+  }
+  function pxToGrid(px, py) {
+    const rect = canvas.getBoundingClientRect();
+    const x = (px - rect.left) * (cssSize / rect.width);
+    const y = (py - rect.top) * (cssSize / rect.height);
+    const c = Math.round((x - pad) / cell);
+    const r = Math.round((y - pad) / cell);
+    if (r < 0 || r >= SIZE || c < 0 || c >= SIZE) return null;
+    // 容差：离交叉点太远不算
+    const { x: gx, y: gy } = gridToPx(r, c);
+    if (Math.hypot(x - gx, y - gy) > cell * 0.5) return null;
+    return { r, c };
+  }
+
+  /* ====== 绘制 ====== */
+  function draw() {
+    ctx.clearRect(0, 0, cssSize, cssSize);
+    drawGrid();
+    drawStones();
+    if (lastMove && !winningCells) drawLastMarker(lastMove);
+    if (winningCells) drawWinHighlight(winningCells);
+  }
+
+  function drawGrid() {
+    ctx.strokeStyle = getCss("--board-line");
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let i = 0; i < SIZE; i++) {
+      const p = pad + i * cell;
+      // 横线
+      ctx.moveTo(pad, p); ctx.lineTo(pad + (SIZE - 1) * cell, p);
+      // 竖线
+      ctx.moveTo(p, pad); ctx.lineTo(p, pad + (SIZE - 1) * cell);
+    }
+    ctx.stroke();
+    // 星位 (3,3)(3,11)(7,7)(11,3)(11,11)
+    ctx.fillStyle = getCss("--star");
+    [[3,3],[3,11],[7,7],[11,3],[11,11]].forEach(([r,c]) => {
+      const { x, y } = gridToPx(r, c);
+      ctx.beginPath(); ctx.arc(x, y, Math.max(2.5, cell * 0.09), 0, Math.PI * 2); ctx.fill();
+    });
+  }
+
+  function drawStones() {
+    if (!board.length) return;            // board not built yet (resize before newGame)
+    const radius = cell * 0.44;
+    for (let r = 0; r < SIZE; r++) {
+      for (let c = 0; c < SIZE; c++) {
+        if (board[r][c] === EMPTY) continue;
+        drawStone(r, c, board[r][c], radius);
+      }
+    }
+  }
+
+  function drawStone(r, c, role, radius) {
+    const { x, y } = gridToPx(r, c);
+    // 阴影
+    ctx.save();
+    ctx.shadowColor = "rgba(0,0,0,.35)";
+    ctx.shadowBlur = 4;
+    ctx.shadowOffsetX = 1;
+    ctx.shadowOffsetY = 2;
+    const grad = ctx.createRadialGradient(
+      x - radius * 0.35, y - radius * 0.35, radius * 0.1, x, y, radius);
+    if (role === BLACK) {
+      grad.addColorStop(0, "#5a5a66");
+      grad.addColorStop(1, getCss("--stone-black"));
+    } else {
+      grad.addColorStop(0, "#ffffff");
+      grad.addColorStop(1, getCss("--stone-white"));
+    }
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+
+  function drawLastMarker(m) {
+    const { x, y } = gridToPx(m.r, m.c);
+    ctx.strokeStyle = getCss("--accent-3");
+    ctx.lineWidth = Math.max(2, cell * 0.06);
+    ctx.beginPath();
+    ctx.arc(x, y, cell * 0.18, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  function drawWinHighlight(cells) {
+    // 高亮五子：accent 描边 + 连线
+    ctx.strokeStyle = getCss("--accent-2");
+    ctx.lineWidth = Math.max(3, cell * 0.1);
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    cells.forEach((p, i) => {
+      const { x, y } = gridToPx(p.r, p.c);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    // 每个棋子外圈高亮
+    cells.forEach(p => {
+      const { x, y } = gridToPx(p.r, p.c);
+      ctx.strokeStyle = getCss("--accent-2");
+      ctx.lineWidth = Math.max(2, cell * 0.07);
+      ctx.beginPath(); ctx.arc(x, y, cell * 0.48, 0, Math.PI * 2); ctx.stroke();
+    });
+  }
+
+  function getCss(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || "#000";
+  }
+
+  /* ====== 游戏逻辑 ====== */
+  function newGame() {
+    board = Array.from({ length: SIZE }, () => Array(SIZE).fill(EMPTY));
+    history = [];
+    winningCells = null;
+    lastMove = null;
+    gameOver = false;
+    aiThinking = false;
+    thinkEl.hidden = true;
+    turn = BLACK; // 黑方先手
+    updateUI();
+    draw();
+    // 若玩家执白，AI(黑)先走
+    if (playerRole === WHITE) {
+      scheduleAi();
+    }
+  }
+
+  function placeStone(r, c, role) {
+    board[r][c] = role;
+    history.push({ r, c, role });
+    lastMove = { r, c };
+    const win = checkWin(r, c, role);
+    if (win) {
+      gameOver = true;
+      winningCells = win;
+      draw();
+      onGameOver(role);
+      return true;
+    }
+    turn = role === BLACK ? WHITE : BLACK;
+    return false;
+  }
+
+  function playerClick(r, c) {
+    if (gameOver || aiThinking) return;
+    if (turn !== playerRole) return;
+    if (board[r][c] !== EMPTY) return;
+    placeStone(r, c, playerRole);
+    updateUI();
+    if (!gameOver && turn === aiRole) scheduleAi();
+  }
+
+  function scheduleAi() {
+    aiThinking = true;
+    thinkEl.hidden = false;
+    undoBtn.disabled = true;
+    updateUI();
+    // 短延迟以显示思考态，避免阻塞 UI
+    setTimeout(() => {
+      try {
+        const move = aiMove();
+        if (move) placeStone(move.r, move.c, aiRole);
+      } finally {
+        aiThinking = false;
+        thinkEl.hidden = true;
+        undoBtn.disabled = false;
+        updateUI();
+      }
+    }, 280);
+  }
+
+  function undo() {
+    if (gameOver || aiThinking) return;
+    if (!history.some(m => m.role === playerRole)) {
+      SG.toast && SG.toast("无步可悔");
+      return;
+    }
+    // 连续悔到玩家回合（最多两步）
+    let popped = 0;
+    while (history.length && popped < 2) {
+      const m = history.pop();
+      board[m.r][m.c] = EMPTY;
+      turn = m.role;
+      popped++;
+      if (m.role === playerRole) break;
+    }
+    winningCells = null;
+    gameOver = false;
+    lastMove = history.length ? { r: history[history.length - 1].r, c: history[history.length - 1].c } : null;
+    draw();
+    updateUI();
+    navigator.vibrate && navigator.vibrate(10);
+  }
+
+  /* ====== 胜负判定 ====== */
+  function checkWin(r, c, role) {
+    const dirs = [[0, 1], [1, 0], [1, 1], [1, -1]];
+    for (const [dr, dc] of dirs) {
+      const line = [{ r, c }];
+      let i = 1;
+      while (inB(r + dr * i, c + dc * i) && board[r + dr * i][c + dc * i] === role) {
+        line.push({ r: r + dr * i, c: c + dc * i }); i++;
+      }
+      i = 1;
+      while (inB(r - dr * i, c - dc * i) && board[r - dr * i][c - dc * i] === role) {
+        line.unshift({ r: r - dr * i, c: c - dc * i }); i++;
+      }
+      if (line.length >= 5) return line.slice(0, 5);
+    }
+    return null;
+  }
+  function inB(r, c) { return r >= 0 && r < SIZE && c >= 0 && c < SIZE; }
+
+  /* ====== AI: 启发式评估（中等难度） ====== */
+  // 候选点：已有棋子周围 2 格内的空位
+  function candidates() {
+    const seen = new Set();
+    const list = [];
+    let hasStone = false;
+    for (let r = 0; r < SIZE; r++) {
+      for (let c = 0; c < SIZE; c++) {
+        if (board[r][c] !== EMPTY) {
+          hasStone = true;
+          for (let dr = -2; dr <= 2; dr++) {
+            for (let dc = -2; dc <= 2; dc++) {
+              const nr = r + dr, nc = c + dc;
+              if (!inB(nr, nc) || board[nr][nc] !== EMPTY) continue;
+              const k = nr * SIZE + nc;
+              if (seen.has(k)) continue;
+              seen.add(k);
+              list.push({ r: nr, c: nc });
+            }
+          }
+        }
+      }
+    }
+    if (!hasStone) return [{ r: 7, c: 7 }];
+    return list;
+  }
+
+  // 评估在 (r,c) 落子 role 的得分（4 个方向求和）
+  function scorePoint(r, c, role) {
+    const dirs = [[0, 1], [1, 0], [1, 1], [1, -1]];
+    let total = 0;
+    for (const [dr, dc] of dirs) {
+      let count = 1, open = 0;
+      // 正向
+      let i = 1;
+      while (inB(r + dr * i, c + dc * i) && board[r + dr * i][c + dc * i] === role) { count++; i++; }
+      if (inB(r + dr * i, c + dc * i) && board[r + dr * i][c + dc * i] === EMPTY) open++;
+      // 反向
+      i = 1;
+      while (inB(r - dr * i, c - dc * i) && board[r - dr * i][c - dc * i] === role) { count++; i++; }
+      if (inB(r - dr * i, c - dc * i) && board[r - dr * i][c - dc * i] === EMPTY) open++;
+      total += shapeScore(count, open);
+    }
+    return total;
+  }
+
+  function shapeScore(count, open) {
+    if (count >= 5) return 100000;
+    if (count === 4) return open === 2 ? 10000 : open === 1 ? 1000 : 0;
+    if (count === 3) return open === 2 ? 1000 : open === 1 ? 100 : 0;
+    if (count === 2) return open === 2 ? 100 : open === 1 ? 10 : 0;
+    if (count === 1) return open === 2 ? 10 : open === 1 ? 1 : 0;
+    return 0;
+  }
+
+  function aiMove() {
+    const cands = candidates();
+    let best = -Infinity, bestMove = cands[0];
+    for (const m of cands) {
+      const my = scorePoint(m.r, m.c, aiRole);
+      const opp = scorePoint(m.r, m.c, playerRole);
+      // 进攻略优先，但必防对方必胜（opp 大时自然会被选）
+      let s = my * 1.05 + opp;
+      // 小随机扰动，避免每局完全雷同
+      s += Math.random() * 0.5;
+      if (s > best) { best = s; bestMove = m; }
+    }
+    return bestMove;
+  }
+
+  /* ====== UI ====== */
+  function updateUI() {
+    streakV.textContent = streak;
+    if (turn === BLACK) {
+      turnDot.className = "dot black";
+      turnText.textContent = (gameOver ? "终局" : (turn === playerRole ? "你（黑）行棋" : "AI（黑）行棋"));
+    } else {
+      turnDot.className = "dot white";
+      turnText.textContent = (gameOver ? "终局" : (turn === playerRole ? "你（白）行棋" : "AI（白）行棋"));
+    }
+    if (gameOver) turnText.textContent = "终局";
+    undoBtn.disabled = gameOver || aiThinking || !history.some(m => m.role === playerRole);
+  }
+
+  /* ====== 结束弹窗 ====== */
+  function onGameOver(winnerRole) {
+    const playerWin = winnerRole === playerRole;
+    if (playerWin) {
+      streak += 1;
+      SG.best(KEY, streak);
+    } else {
+      streak = 0;
+    }
+    updateUI();
+    navigator.vibrate && navigator.vibrate(playerWin ? [20, 40, 20] : 40);
+    const name = winnerRole === BLACK ? "黑方" : "白方";
+    const who = winnerRole === playerRole ? "你赢了" : "AI 获胜";
+    const best = SG.best(KEY);
+    const ov = SG.overlay({
+      title: playerWin ? "胜！" : "负",
+      body: `${who} · ${name}连成五子<br>当前连胜 ${streak} · 最佳 ${best}`,
+      buttons: [
+        { text: "再来一局", kind: "primary", onClick: () => { ov.hide(); newGame(); } },
+        { text: "查看棋盘", kind: "", onClick: () => ov.hide() }
+      ]
+    });
+    setTimeout(() => ov.show(), 350);
+  }
+
+  /* ====== 事件 ====== */
+  function onPointer(e) {
+    e.preventDefault();
+    const p = e.changedTouches ? e.changedTouches[0] : e;
+    const pos = pxToGrid(p.clientX, p.clientY);
+    if (pos) playerClick(pos.r, pos.c);
+  }
+  canvas.addEventListener("click", onPointer);
+  // 触控更跟手
+  canvas.addEventListener("touchstart", (e) => {
+    if (e.touches.length > 1) return;
+    onPointer(e);
+  }, { passive: false });
+
+  document.getElementById("restart-btn").addEventListener("click", () => newGame());
+  document.getElementById("undo-btn").addEventListener("click", () => undo());
+
+  // 先后手切换
+  document.querySelectorAll("#first-seg button").forEach(btn => {
+    btn.addEventListener("click", () => {
+      if (aiThinking) return;
+      const first = btn.dataset.first;
+      playerRole = first === "black" ? BLACK : WHITE;
+      aiRole = playerRole === BLACK ? WHITE : BLACK;
+      document.querySelectorAll("#first-seg button").forEach(b => b.setAttribute("aria-pressed", String(b === btn)));
+      newGame();
+    });
+  });
+
+  // 主题 / 规则
+  document.getElementById("theme-btn").addEventListener("click", () => {
+    SG.toggleTheme();
+    draw(); // 重绘以更新棋盘配色
+  });
+  document.getElementById("help-btn").addEventListener("click", () => {
+    const ov = SG.overlay({
+      title: "五子棋规则",
+      body: `15×15 棋盘，黑方先手，双方轮流在交叉点落子。<br>率先在横、竖、斜方向连成 <b>五子</b> 一方获胜。<br><br>` +
+        `• 点击交叉点落子（移动端触控点选）<br>` +
+        `• 可选 <b>执黑先行</b> 或 <b>执白后手</b><br>` +
+        `• <b>悔棋</b> 撤销最近一轮（你 + AI）<br>` +
+        `• <b>重开</b> 开始新局，连胜会记录到最佳<br><br>` +
+        `AI 采用启发式评估，能攻能守，难度中等。`,
+      buttons: [{ text: "知道了", kind: "primary", onClick: () => ov.hide() }]
+    });
+    ov.show();
+  });
+
+  // 键盘：R 重开，U 悔棋
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "r" || e.key === "R") newGame();
+    else if (e.key === "u" || e.key === "U") undo();
+  });
+
+  // 监听主题变化（其它入口切换时同步重绘）
+  new MutationObserver(() => draw()).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+
+  /* ====== 启动 ====== */
+  function init() {
+    streak = 0; // 连胜从 0 起，胜负时更新
+    resize();
+    newGame();
+  }
+  window.addEventListener("resize", () => resize());
+  // 等布局稳定
+  requestAnimationFrame(() => requestAnimationFrame(init));
+  </script>
+</body>
+</html>
