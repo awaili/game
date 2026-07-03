@@ -111,17 +111,82 @@
     });
   }
 
+  /* ---- 游戏热度追踪 ---- */
+  function trackPlay(gameId) {
+    const key = "slowpapa-plays-" + gameId;
+    const count = parseInt(localStorage.getItem(key) || "0", 10) + 1;
+    localStorage.setItem(key, String(count));
+  }
+
+  function getPlayCount(gameId) {
+    return parseInt(localStorage.getItem("slowpapa-plays-" + gameId) || "0", 10);
+  }
+
+  /* ---- 预加载游戏资源 ---- */
+  function preloadGame(path) {
+    const link = document.createElement("link");
+    link.rel = "prefetch";
+    link.href = path;
+    link.as = "document";
+    document.head.appendChild(link);
+  }
+
+  /* ---- 键盘快捷键 ---- */
+  function setupHotkeys() {
+    document.addEventListener("keydown", e => {
+      // Ctrl/Cmd + K: 聚焦搜索框
+      if ((e.ctrlKey || e.metaKey) && e.key === "k") {
+        e.preventDefault();
+        document.getElementById("search").focus();
+      }
+      // R: 随机游戏
+      if (e.key === "r" && !e.ctrlKey && !e.metaKey && document.activeElement === document.body) {
+        document.getElementById("random-btn").click();
+      }
+      // /: 聚焦搜索
+      if (e.key === "/" && document.activeElement === document.body) {
+        e.preventDefault();
+        document.getElementById("search").focus();
+      }
+    });
+  }
+
   function init() {
     applyTheme();
     buildFilters();
+    setupHotkeys();
+
     const search = document.getElementById("search");
     search.addEventListener("input", e => { state.q = e.target.value; render(); });
+
     document.getElementById("theme-btn").addEventListener("click", toggleTheme);
+
     document.getElementById("random-btn").addEventListener("click", () => {
       const g = GAMES[Math.floor(Math.random() * GAMES.length)];
       location.href = g.path;
     });
+
+    // 点击卡片时追踪和预加载
+    document.getElementById("grid").addEventListener("click", e => {
+      const card = e.target.closest(".card");
+      if (card) {
+        const href = card.getAttribute("href");
+        const game = GAMES.find(g => g.path === href);
+        if (game) trackPlay(game.id);
+      }
+    });
+
+    // 鼠标悬停时预加载游戏
+    document.getElementById("grid").addEventListener("mouseenter", e => {
+      const card = e.target.closest(".card");
+      if (card) {
+        const href = card.getAttribute("href");
+        if (href) preloadGame(href);
+      }
+    }, true);
+
     render();
+
     // refresh best badges when returning to the tab
     document.addEventListener("visibilitychange", () => { if (!document.hidden) render(); });
   }

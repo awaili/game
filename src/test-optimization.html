@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>优化测试 - Slowpapa</title>
+<style>
+body { font-family: system-ui; max-width: 800px; margin: 40px auto; padding: 20px; line-height: 1.6; }
+h1 { color: #8b5cf6; }
+.test { margin: 20px 0; padding: 15px; border: 2px solid #e5e7eb; border-radius: 8px; }
+.pass { border-color: #10b981; background: #f0fdf4; }
+.fail { border-color: #ef4444; background: #fef2f2; }
+.status { font-weight: bold; }
+pre { background: #f3f4f6; padding: 10px; border-radius: 4px; overflow-x: auto; }
+</style>
+</head>
+<body>
+<h1>🧠 Slowpapa 优化检测</h1>
+
+<div class="test" id="pwa-test">
+  <h3>PWA 支持</h3>
+  <p class="status">检测中...</p>
+</div>
+
+<div class="test" id="sw-test">
+  <h3>Service Worker</h3>
+  <p class="status">检测中...</p>
+</div>
+
+<div class="test" id="perf-test">
+  <h3>性能监控 API</h3>
+  <p class="status">检测中...</p>
+</div>
+
+<div class="test" id="cache-test">
+  <h3>缓存策略</h3>
+  <p class="status">检测中...</p>
+</div>
+
+<div class="test" id="hotkey-test">
+  <h3>快捷键提示</h3>
+  <ul>
+    <li><kbd>Ctrl/Cmd + K</kbd> 或 <kbd>/</kbd> - 聚焦搜索</li>
+    <li><kbd>R</kbd> - 随机游戏</li>
+    <li><kbd>Esc</kbd> - 关闭弹窗（游戏内）</li>
+  </ul>
+</div>
+
+<script>
+(function() {
+  // PWA 检测
+  const pwaTest = document.getElementById('pwa-test');
+  fetch('/manifest.json')
+    .then(r => r.json())
+    .then(manifest => {
+      pwaTest.className = 'test pass';
+      pwaTest.querySelector('.status').innerHTML =
+        `✓ manifest.json 已加载<br><small>应用名: ${manifest.name}</small>`;
+    })
+    .catch(() => {
+      pwaTest.className = 'test fail';
+      pwaTest.querySelector('.status').textContent = '✗ manifest.json 未找到';
+    });
+
+  // Service Worker 检测
+  const swTest = document.getElementById('sw-test');
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.getRegistration('/sw.js')
+      .then(reg => {
+        if (reg) {
+          swTest.className = 'test pass';
+          swTest.querySelector('.status').innerHTML =
+            `✓ Service Worker 已注册<br><small>状态: ${reg.active ? 'active' : 'installing'}</small>`;
+        } else {
+          swTest.className = 'test fail';
+          swTest.querySelector('.status').textContent = '✗ Service Worker 未注册（返回首页触发注册）';
+        }
+      });
+  } else {
+    swTest.className = 'test fail';
+    swTest.querySelector('.status').textContent = '✗ 浏览器不支持 Service Worker';
+  }
+
+  // 性能 API 检测
+  const perfTest = document.getElementById('perf-test');
+  if (typeof PerformanceObserver !== 'undefined') {
+    perfTest.className = 'test pass';
+    perfTest.querySelector('.status').textContent = '✓ PerformanceObserver 可用';
+  } else {
+    perfTest.className = 'test fail';
+    perfTest.querySelector('.status').textContent = '✗ PerformanceObserver 不可用';
+  }
+
+  // 缓存检测
+  const cacheTest = document.getElementById('cache-test');
+  if ('caches' in window) {
+    caches.keys().then(keys => {
+      const sgCaches = keys.filter(k => k.startsWith('slowpapa-'));
+      if (sgCaches.length > 0) {
+        cacheTest.className = 'test pass';
+        cacheTest.querySelector('.status').innerHTML =
+          `✓ 缓存已启用<br><small>缓存名: ${sgCaches.join(', ')}</small>`;
+      } else {
+        cacheTest.className = 'test fail';
+        cacheTest.querySelector('.status').textContent = '⚠ 缓存未生成（返回首页触发）';
+      }
+    });
+  } else {
+    cacheTest.className = 'test fail';
+    cacheTest.querySelector('.status').textContent = '✗ Cache API 不可用';
+  }
+})();
+</script>
+</body>
+</html>

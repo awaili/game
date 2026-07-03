@@ -42,6 +42,19 @@
   --shadow-soft: 0 6px 18px -10px rgba(90, 70, 160, .25);
 }
 
+/* 高对比度模式 */
+@media (prefers-contrast: high) {
+  :root {
+    --border: rgba(255, 255, 255, 0.35);
+    --surface: rgba(255, 255, 255, 0.12);
+    --surface-2: rgba(255, 255, 255, 0.18);
+  }
+  :root[data-theme="light"] {
+    --border: rgba(80, 60, 160, .35);
+    --text-dim: #3d3558;
+  }
+}
+
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
 html, body {
@@ -316,6 +329,29 @@ body {
   border: 1px solid var(--border);
   border-bottom-width: 2px;
   border-radius: 6px;
+}
+
+/* 跳过到主要内容（无障碍） */
+.skip-link {
+  position: absolute;
+  top: -40px;
+  left: 0;
+  background: var(--accent);
+  color: #fff;
+  padding: 8px 16px;
+  text-decoration: none;
+  border-radius: 0 0 8px 0;
+  z-index: 100;
+  font-weight: 700;
+}
+.skip-link:focus {
+  top: 0;
+}
+
+/* 焦点可见性增强 */
+*:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 @media (max-width: 560px) {

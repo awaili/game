@@ -140,4 +140,68 @@
     });
     return bar;
   };
+
+  /* ---- Game lifecycle manager ---- */
+  SG.Game = function (cfg) {
+    const game = {
+      paused: false,
+      over: false,
+      won: false,
+      _listeners: [],
+      _cleanups: [],
+
+      // 注册清理函数
+      onCleanup(fn) { this._cleanups.push(fn); },
+
+      // 统一事件监听管理
+      on(target, event, handler, opts) {
+        target.addEventListener(event, handler, opts);
+        this._listeners.push({ target, event, handler, opts });
+      },
+
+      // 清理所有监听器
+      cleanup() {
+        this._listeners.forEach(({ target, event, handler, opts }) => {
+          target.removeEventListener(event, handler, opts);
+        });
+        this._cleanups.forEach(fn => fn());
+        this._listeners = [];
+        this._cleanups = [];
+      },
+
+      // 重置游戏状态
+      reset() {
+        this.paused = false;
+        this.over = false;
+        this.won = false;
+        if (cfg.onReset) cfg.onReset();
+      },
+
+      // 结束游戏
+      end(result) {
+        this.over = true;
+        if (result === "win") this.won = true;
+        if (cfg.onEnd) cfg.onEnd(result);
+      },
+    };
+    return game;
+  };
+
+  /* ---- 性能监控 ---- */
+  SG.perf = {
+    mark(name) {
+      if (performance.mark) performance.mark(name);
+    },
+    measure(name, start, end) {
+      if (performance.measure) {
+        try { performance.measure(name, start, end); } catch (e) {}
+      }
+    },
+  };
+
+  /* ---- 错误上报 ---- */
+  SG.reportError = function (error, context) {
+    console.error("[Game Error]", error, context);
+    // 可扩展：发送到后端分析服务
+  };
 })();

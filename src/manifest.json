@@ -1,0 +1,27 @@
+{
+  "name": "Slowpapa 益智游戏大厅",
+  "short_name": "Slowpapa",
+  "description": "25 款经典益智游戏，打开即玩",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b0c1a",
+  "theme_color": "#8b5cf6",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/icon-192.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["games", "entertainment"],
+  "lang": "zh-CN",
+  "dir": "ltr"
+}

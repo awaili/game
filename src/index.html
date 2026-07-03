@@ -12,8 +12,11 @@
 <meta property="og:url" content="https://game.slowpapa.com/">
 <meta property="og:type" content="website">
 <meta name="theme-color" content="#0b0c1a">
-<link rel="stylesheet" href="/assets/site.css?v=20260625">
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icon-192.svg">
+<link rel="stylesheet" href="/assets/site.css?v=20260704">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
+<link rel="preconnect" href="https://www.googletagmanager.com">
 <!-- Google tag (gtag.js) -->
 <script async src="https://www.googletagmanager.com/gtag/js?id=G-YESHMQSRSV"></script>
 <script>
@@ -61,6 +64,58 @@
   </footer>
 </div>
 
-<script src="/assets/app.js?v=20260625"></script>
+<script src="/assets/app.js?v=20260704"></script>
+<script>
+// PWA 注册
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js')
+      .then(reg => console.log('[PWA] Service Worker registered'))
+      .catch(err => console.error('[PWA] Registration failed:', err));
+  });
+}
+
+// 性能监控 (Core Web Vitals)
+if (typeof PerformanceObserver !== 'undefined') {
+  // LCP (Largest Contentful Paint)
+  try {
+    new PerformanceObserver(list => {
+      const entries = list.getEntries();
+      const lastEntry = entries[entries.length - 1];
+      const lcp = lastEntry.renderTime || lastEntry.loadTime;
+      if (lcp > 2500) console.warn('[Perf] LCP:', lcp, 'ms (>2.5s)');
+    }).observe({ type: 'largest-contentful-paint', buffered: true });
+  } catch (e) {}
+
+  // FID (First Input Delay)
+  try {
+    new PerformanceObserver(list => {
+      list.getEntries().forEach(entry => {
+        const fid = entry.processingStart - entry.startTime;
+        if (fid > 100) console.warn('[Perf] FID:', fid, 'ms (>100ms)');
+      });
+    }).observe({ type: 'first-input', buffered: true });
+  } catch (e) {}
+
+  // CLS (Cumulative Layout Shift)
+  try {
+    let cls = 0;
+    new PerformanceObserver(list => {
+      list.getEntries().forEach(entry => {
+        if (!entry.hadRecentInput) cls += entry.value;
+      });
+      if (cls > 0.1) console.warn('[Perf] CLS:', cls, '(>0.1)');
+    }).observe({ type: 'layout-shift', buffered: true });
+  } catch (e) {}
+}
+
+// 错误捕获
+window.addEventListener('error', e => {
+  console.error('[Error]', e.error || e.message);
+});
+window.addEventListener('unhandledrejection', e => {
+  console.error('[Promise Error]', e.reason);
+});
+</script>
 </body>
 </html>

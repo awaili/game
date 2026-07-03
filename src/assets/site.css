@@ -115,6 +115,12 @@ body {
 .card .play svg { width: 13px; height: 13px; }
 .card .best { position: absolute; top: 10px; right: 10px; font-size: 10px; font-weight: 800; color: var(--warn); background: rgba(251,191,36,.12); border: 1px solid rgba(251,191,36,.3); padding: 2px 7px; border-radius: 999px; }
 
+/* 键盘导航时增强焦点可见性 */
+.card:focus-visible {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow), 0 0 0 3px var(--accent);
+}
+
 .empty { grid-column: 1/-1; text-align: center; color: var(--text-mute); padding: 50px 0; font-size: 14px; }
 
 /* ---------- Footer ---------- */
@@ -127,5 +133,24 @@ body {
 .hero, .toolbar, .grid { animation: rise .5s ease both; }
 .grid .card { animation: rise .45s ease both; }
 .grid .card:nth-child(n){ animation-delay: calc(var(--i, 0) * 30ms); }
+
+/* 焦点可见性增强 */
+*:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* 高对比度模式 */
+@media (prefers-contrast: high) {
+  :root {
+    --border: rgba(255, 255, 255, 0.28);
+    --surface: rgba(255, 255, 255, 0.10);
+    --surface-2: rgba(255, 255, 255, 0.16);
+  }
+  :root[data-theme="light"] {
+    --border: rgba(80, 60, 160, .30);
+    --text-dim: #3d3558;
+  }
+}
 
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
