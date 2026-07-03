@@ -28,6 +28,9 @@
     { id: "tictactoe",   path: "games/23_tictactoe/index.html",    icon: "⭕", name: "井字棋",    cat: "strat",  tag: "对战", desc: "三子连线即胜，挑战 AI",            grad: "linear-gradient(135deg,#475569,#334155)" },
     { id: "sliding",     path: "games/24_sliding/index.html",      icon: "🔲", name: "数字华容道",cat: "logic",  tag: "拼图", desc: "滑动方块按 1 至 N 顺序排好",     grad: "linear-gradient(135deg,#0ea5e9,#3b82f6)" },
     { id: "slingshot",   path: "games/25_slingshot/index.html",     icon: "🐦", name: "弹弓小鸟",  cat: "phys",   tag: "物理", desc: "拉弓发射，击落所有小猪过关",     grad: "linear-gradient(135deg,#ef4444,#f59e0b)" },
+    { id: "whackamole",  path: "games/26_whackamole/index.html",   icon: "🔨", name: "打地鼠",    cat: "reflex", tag: "反应", desc: "快速点击冒出的地鼠得分",         grad: "linear-gradient(135deg,#f59e0b,#dc2626)" },
+    { id: "jumper",      path: "games/27_jumper/index.html",       icon: "🟦", name: "跳跃方块",  cat: "reflex", tag: "手速", desc: "一键跳跃躲避障碍，挑战距离",     grad: "linear-gradient(135deg,#3b82f6,#8b5cf6)" },
+    { id: "hexagon",     path: "games/28_hexagon/index.html",      icon: "⬡", name: "方块拼图",  cat: "logic",  tag: "策略", desc: "拖拽方块填满棋盘消除得分",       grad: "linear-gradient(135deg,#06b6d4,#8b5cf6)" },
   ];
 
   const CATS = [

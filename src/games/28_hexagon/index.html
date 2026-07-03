@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="description" content="六角拼图 — 拖拽六边形方块，填满棋盘消除得分">
+  <title>六角拼图 · Slowpapa</title>
+  <link rel="stylesheet" href="/assets/game.css">
+  <style>
+    .game-board { width: min(94vw, 460px); aspect-ratio: 1 / 1; padding: 16px; }
+    #canvas { display: block; width: 100%; height: 100%; border-radius: var(--radius); touch-action: none; }
+    .piece-tray { display: flex; gap: 16px; justify-content: center; margin-top: 16px; padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); width: min(94vw, 460px); }
+    .piece-slot { width: 80px; height: 80px; display: flex; align-items: center; justify-content: center; background: var(--surface-2); border: 2px dashed var(--border); border-radius: 12px; cursor: grab; }
+    .piece-slot:active { cursor: grabbing; }
+    .piece-slot canvas { display: block; max-width: 100%; max-height: 100%; }
+    .piece-slot.empty { opacity: 0.3; cursor: default; }
+  </style>
+</head>
+<body>
+  <div class="game-shell">
+    <div class="game-topbar">
+      <a class="back" href="/" aria-label="返回">‹</a>
+      <div class="title">六角拼图<small>填满格子消除得分</small></div>
+      <div class="stats">
+        <div class="stat"><span class="k">最高</span><span class="v accent" id="bestV">0</span></div>
+        <div class="stat"><span class="k">得分</span><span class="v" id="scoreV">0</span></div>
+      </div>
+      <button class="icon-btn" id="themeBtn" aria-label="切换主题">◐</button>
+      <button class="icon-btn" id="help" aria-label="规则">?</button>
+    </div>
+
+    <div class="game-stage">
+      <div style="display:flex;flex-direction:column;align-items:center;width:100%;">
+        <div class="game-board">
+          <canvas id="canvas"></canvas>
+        </div>
+        <div class="piece-tray" id="tray">
+          <div class="piece-slot" data-idx="0"><canvas></canvas></div>
+          <div class="piece-slot" data-idx="1"><canvas></canvas></div>
+          <div class="piece-slot" data-idx="2"><canvas></canvas></div>
+        </div>
+        <div class="action-row">
+          <button class="btn" id="newBtn">新游戏</button>
+        </div>
+        <p class="hint">拖拽方块到棋盘，填满行或列消除得分</p>
+      </div>
+    </div>
+  </div>
+
+  <script src="/assets/game.js"></script>
+  <script>
+  (function () {
+    "use strict";
+    const KEY = "hexagon";
+    const GRID_SIZE = 8;
+    const cv = document.getElementById("canvas");
+    const ctx = cv.getContext("2d");
+    const scoreEl = document.getElementById("scoreV");
+    const bestEl = document.getElementById("bestV");
+
+    let DPR = 1, W = 0, H = 0;
+    let hexSize = 0, hexH = 0, hexW = 0;
+    let score = 0, best = SG.best(KEY);
+    let grid = []; // 8x8 网格，0=空，1=填充
+    let pieces = []; // 当前3个待放置方块
+    let dragging = null; // {pieceIdx, offsetX, offsetY}
+    let dragX = 0, dragY = 0;
+
+    bestEl.textContent = best;
+
+    // 方块形状库（相对坐标）
+    const SHAPES = [
+      [[0,0]], // 单个
+      [[0,0],[1,0]], // 2横
+      [[0,0],[0,1]], // 2竖
+      [[0,0],[1,0],[2,0]], // 3横
+      [[0,0],[0,1],[0,2]], // 3竖
+      [[0,0],[1,0],[0,1]], // L型
+      [[0,0],[1,0],[1,1]], // 反L
+      [[0,0],[1,0],[2,0],[3,0]], // 4横
+      [[0,0],[0,1],[0,2],[0,3]], // 4竖
+      [[0,0],[1,0],[0,1],[1,1]], // 2x2方块
+      [[0,0],[1,0],[2,0],[1,1]], // T型
+    ];
+
+    function resize() {
+      DPR = Math.max(1, window.devicePixelRatio || 1);
+      const rect = cv.getBoundingClientRect();
+      W = rect.width;
+      H = rect.height;
+      cv.width = Math.round(W * DPR);
+      cv.height = Math.round(H * DPR);
+      ctx.scale(DPR, DPR);
+      hexSize = Math.min(W, H) / (GRID_SIZE + 2);
+      hexW = hexSize;
+      hexH = hexSize;
+    }
+
+    function initGrid() {
+      grid = Array.from({length: GRID_SIZE}, () => Array(GRID_SIZE).fill(0));
+      score = 0;
+      updateScore();
+      generatePieces();
+      draw();
+    }
+
+    function generatePieces() {
+      pieces = [];
+      for (let i = 0; i < 3; i++) {
+        const shape = SHAPES[Math.floor(Math.random() * SHAPES.length)];
+        const color = ["#8b5cf6", "#ec4899", "#38bdf8", "#f59e0b", "#10b981"][Math.floor(Math.random() * 5)];
+        pieces.push({ shape, color, placed: false });
+      }
+      drawPieceTray();
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, W, H);
+
+      // 画网格
+      const startX = (W - GRID_SIZE * hexW) / 2;
+      const startY = (H - GRID_SIZE * hexH) / 2;
+
+      for (let r = 0; r < GRID_SIZE; r++) {
+        for (let c = 0; c < GRID_SIZE; c++) {
+          const x = startX + c * hexW;
+          const y = startY + r * hexH;
+
+          ctx.fillStyle = grid[r][c] ? "#8b5cf6" : getComputedStyle(document.documentElement).getPropertyValue("--surface").trim();
+          ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--border").trim();
+          ctx.lineWidth = 1;
+          roundRect(ctx, x, y, hexW - 2, hexH - 2, 6);
+          ctx.fill();
+          ctx.stroke();
+        }
+      }
+
+      // 画拖拽中的方块
+      if (dragging) {
+        const piece = pieces[dragging.pieceIdx];
+        drawPiece(ctx, piece, dragX, dragY, hexW * 0.8);
+      }
+    }
+
+    function roundRect(ctx, x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
+
+    function drawPiece(ctx, piece, x, y, size) {
+      piece.shape.forEach(([dr, dc]) => {
+        ctx.fillStyle = piece.color;
+        ctx.shadowColor = piece.color;
+        ctx.shadowBlur = 10;
+        roundRect(ctx, x + dc * size, y + dr * size, size - 2, size - 2, 4);
+        ctx.fill();
+      });
+      ctx.shadowColor = "transparent";
+      ctx.shadowBlur = 0;
+    }
+
+    function drawPieceTray() {
+      document.querySelectorAll(".piece-slot").forEach((slot, i) => {
+        const piece = pieces[i];
+        const canvas = slot.querySelector("canvas");
+        const ctx2 = canvas.getContext("2d");
+
+        if (piece.placed) {
+          slot.classList.add("empty");
+          canvas.width = 0;
+          canvas.height = 0;
+          return;
+        }
+
+        slot.classList.remove("empty");
+
+        const maxR = Math.max(...piece.shape.map(p => p[0])) + 1;
+        const maxC = Math.max(...piece.shape.map(p => p[1])) + 1;
+        const cellSize = Math.min(70 / maxC, 70 / maxR);
+
+        canvas.width = maxC * cellSize;
+        canvas.height = maxR * cellSize;
+
+        drawPiece(ctx2, piece, 0, 0, cellSize);
+      });
+    }
+
+    function updateScore() {
+      scoreEl.textContent = score;
+      if (score > best) {
+        best = score;
+        SG.best(KEY, best);
+        bestEl.textContent = best;
+      }
+    }
+
+    function canPlace(piece, gr, gc) {
+      return piece.shape.every(([dr, dc]) => {
+        const r = gr + dr;
+        const c = gc + dc;
+        return r >= 0 && r < GRID_SIZE && c >= 0 && c < GRID_SIZE && grid[r][c] === 0;
+      });
+    }
+
+    function placePiece(piece, gr, gc) {
+      piece.shape.forEach(([dr, dc]) => {
+        grid[gr + dr][gc + dc] = 1;
+      });
+      piece.placed = true;
+
+      // 检查消除
+      let cleared = 0;
+      for (let r = 0; r < GRID_SIZE; r++) {
+        if (grid[r].every(c => c === 1)) {
+          grid[r].fill(0);
+          cleared++;
+        }
+      }
+      for (let c = 0; c < GRID_SIZE; c++) {
+        if (grid.every(row => row[c] === 1)) {
+          grid.forEach(row => row[c] = 0);
+          cleared++;
+        }
+      }
+
+      score += piece.shape.length + cleared * 10;
+      updateScore();
+
+      // 检查是否全部放完
+      if (pieces.every(p => p.placed)) {
+        setTimeout(generatePieces, 300);
+      }
+
+      // 检查游戏结束
+      setTimeout(checkGameOver, 100);
+    }
+
+    function checkGameOver() {
+      const canPlaceAny = pieces.some(p => !p.placed && canPlaceAnywhere(p));
+      if (!canPlaceAny && pieces.some(p => !p.placed)) {
+        setTimeout(() => {
+          const ov = SG.overlay({
+            title: "游戏结束",
+            body: "没有空间放置剩余方块了",
+            score: score,
+            buttons: [
+              { text: "再来一局", kind: "primary", onClick: () => { ov.hide(); initGrid(); } },
+              { text: "返回", kind: "", onClick: () => ov.hide() }
+            ],
+          });
+          ov.show();
+        }, 200);
+      }
+    }
+
+    function canPlaceAnywhere(piece) {
+      for (let r = 0; r < GRID_SIZE; r++) {
+        for (let c = 0; c < GRID_SIZE; c++) {
+          if (canPlace(piece, r, c)) return true;
+        }
+      }
+      return false;
+    }
+
+    function getGridPos(x, y) {
+      const startX = (W - GRID_SIZE * hexW) / 2;
+      const startY = (H - GRID_SIZE * hexH) / 2;
+      const c = Math.floor((x - startX) / hexW);
+      const r = Math.floor((y - startY) / hexH);
+      return { r, c };
+    }
+
+    // 事件
+    cv.addEventListener("pointerdown", e => {
+      const rect = cv.getBoundingClientRect();
+      dragX = e.clientX - rect.left;
+      dragY = e.clientY - rect.top;
+    });
+
+    cv.addEventListener("pointermove", e => {
+      if (!dragging) return;
+      const rect = cv.getBoundingClientRect();
+      dragX = e.clientX - rect.left - dragging.offsetX;
+      dragY = e.clientY - rect.top - dragging.offsetY;
+      draw();
+    });
+
+    cv.addEventListener("pointerup", e => {
+      if (!dragging) return;
+      const rect = cv.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const {r, c} = getGridPos(x, y);
+      const piece = pieces[dragging.pieceIdx];
+
+      if (canPlace(piece, r, c)) {
+        placePiece(piece, r, c);
+        drawPieceTray();
+        navigator.vibrate?.(15);
+      }
+
+      dragging = null;
+      draw();
+    });
+
+    document.querySelectorAll(".piece-slot").forEach((slot, i) => {
+      slot.addEventListener("pointerdown", e => {
+        const piece = pieces[i];
+        if (piece.placed) return;
+
+        const rect = slot.getBoundingClientRect();
+        dragging = {
+          pieceIdx: i,
+          offsetX: e.clientX - rect.left,
+          offsetY: e.clientY - rect.top,
+        };
+
+        const cvRect = cv.getBoundingClientRect();
+        dragX = e.clientX - cvRect.left - dragging.offsetX;
+        dragY = e.clientY - cvRect.top - dragging.offsetY;
+        draw();
+      });
+    });
+
+    document.getElementById("newBtn").addEventListener("click", initGrid);
+    document.getElementById("help").addEventListener("click", () => {
+      const ov = SG.overlay({
+        title: "怎么玩六角拼图",
+        body: "从托盘拖拽方块到棋盘上。填满一整行或一整列时自动消除并得分。<br><br>放置方块 +方块格子数分<br>消除行/列 +10分",
+        buttons: [{ text: "开始游戏", kind: "primary", onClick: () => ov.hide() }],
+      });
+      ov.show();
+    });
+
+    document.getElementById("themeBtn").addEventListener("click", () => { SG.toggleTheme(); draw(); });
+
+    window.addEventListener("resize", () => { resize(); draw(); });
+
+    resize();
+    initGrid();
+  })();
+  </script>
+</body>
+</html>

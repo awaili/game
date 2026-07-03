@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="description" content="跳跃方块 — 一键跳跃，躲避障碍物，挑战极限距离">
+  <title>跳跃方块 · Slowpapa</title>
+  <link rel="stylesheet" href="/assets/game.css">
+  <style>
+    .game-board { width: min(94vw, 500px); height: 300px; padding: 0; background: linear-gradient(180deg, var(--bg-1) 0%, var(--surface) 100%); }
+    #canvas { display: block; width: 100%; height: 100%; border-radius: var(--radius); }
+    .controls { margin-top: 16px; text-align: center; }
+    .controls button { min-width: 140px; }
+  </style>
+</head>
+<body>
+  <div class="game-shell">
+    <div class="game-topbar">
+      <a class="back" href="/" aria-label="返回">‹</a>
+      <div class="title">跳跃方块<small>一键跳跃，躲避障碍</small></div>
+      <div class="stats">
+        <div class="stat"><span class="k">最高</span><span class="v accent" id="bestV">0</span></div>
+        <div class="stat"><span class="k">距离</span><span class="v" id="scoreV">0</span></div>
+      </div>
+      <button class="icon-btn" id="themeBtn" aria-label="切换主题">◐</button>
+      <button class="icon-btn" id="help" aria-label="规则">?</button>
+    </div>
+
+    <div class="game-stage">
+      <div style="display:flex;flex-direction:column;align-items:center;width:100%;">
+        <div class="game-board">
+          <canvas id="canvas"></canvas>
+        </div>
+        <div class="controls">
+          <button class="btn primary" id="jumpBtn">跳跃 / 开始</button>
+        </div>
+        <p class="hint">点击屏幕或按 <span class="kbd">空格</span> 跳跃，躲避障碍物</p>
+      </div>
+    </div>
+  </div>
+
+  <script src="/assets/game.js"></script>
+  <script>
+  (function () {
+    "use strict";
+    const KEY = "jumper";
+    const cv = document.getElementById("canvas");
+    const ctx = cv.getContext("2d");
+    const scoreEl = document.getElementById("scoreV");
+    const bestEl = document.getElementById("bestV");
+
+    let DPR = Math.max(1, window.devicePixelRatio || 1);
+    let W = 0, H = 0; // canvas 逻辑尺寸
+    let best = SG.best(KEY);
+
+    // 游戏状态
+    let playing = false;
+    let gameOver = false;
+    let score = 0;
+    let speed = 5;
+    let obstacleTimer = 0;
+    let obstacleInterval = 80; // 每80帧生成一个障碍物
+
+    // 玩家
+    const player = {
+      x: 80,
+      y: 0,
+      w: 30,
+      h: 30,
+      vy: 0,
+      jumping: false,
+      grounded: true,
+    };
+    const GRAVITY = 0.8;
+    const JUMP_FORCE = -15;
+    const GROUND_Y = 240;
+
+    // 障碍物
+    let obstacles = [];
+
+    bestEl.textContent = best;
+
+    function resize() {
+      DPR = Math.max(1, window.devicePixelRatio || 1);
+      const rect = cv.getBoundingClientRect();
+      W = rect.width;
+      H = rect.height;
+      cv.width = Math.round(W * DPR);
+      cv.height = Math.round(H * DPR);
+      ctx.scale(DPR, DPR);
+      player.y = GROUND_Y - player.h;
+    }
+
+    function reset() {
+      playing = false;
+      gameOver = false;
+      score = 0;
+      speed = 5;
+      obstacles = [];
+      obstacleTimer = 0;
+      player.y = GROUND_Y - player.h;
+      player.vy = 0;
+      player.jumping = false;
+      player.grounded = true;
+      updateScore();
+    }
+
+    function start() {
+      if (playing) return;
+      reset();
+      playing = true;
+      gameOver = false;
+      loop();
+    }
+
+    function jump() {
+      if (!playing && !gameOver) {
+        start();
+        return;
+      }
+      if (!playing || gameOver) return;
+      if (player.grounded) {
+        player.vy = JUMP_FORCE;
+        player.jumping = true;
+        player.grounded = false;
+        navigator.vibrate?.(10);
+      }
+    }
+
+    function updateScore() {
+      scoreEl.textContent = score;
+      if (score > best) {
+        best = score;
+        SG.best(KEY, best);
+        bestEl.textContent = best;
+      }
+    }
+
+    function update() {
+      if (!playing || gameOver) return;
+
+      // 更新玩家物理
+      player.vy += GRAVITY;
+      player.y += player.vy;
+
+      // 着地检测
+      if (player.y >= GROUND_Y - player.h) {
+        player.y = GROUND_Y - player.h;
+        player.vy = 0;
+        player.jumping = false;
+        player.grounded = true;
+      }
+
+      // 天花板检测
+      if (player.y < 0) {
+        player.y = 0;
+        player.vy = 0;
+      }
+
+      // 生成障碍物
+      obstacleTimer++;
+      if (obstacleTimer >= obstacleInterval) {
+        obstacleTimer = 0;
+        const h = 20 + Math.random() * 40;
+        obstacles.push({
+          x: W,
+          y: GROUND_Y - h,
+          w: 20 + Math.random() * 15,
+          h: h,
+        });
+        // 难度递增
+        if (obstacleInterval > 50) obstacleInterval -= 0.5;
+        if (speed < 10) speed += 0.05;
+      }
+
+      // 移动障碍物
+      for (let i = obstacles.length - 1; i >= 0; i--) {
+        const obs = obstacles[i];
+        obs.x -= speed;
+
+        // 碰撞检测
+        if (
+          player.x < obs.x + obs.w &&
+          player.x + player.w > obs.x &&
+          player.y < obs.y + obs.h &&
+          player.y + player.h > obs.y
+        ) {
+          endGame();
+          return;
+        }
+
+        // 移除屏幕外的障碍物并加分
+        if (obs.x + obs.w < 0) {
+          obstacles.splice(i, 1);
+          score++;
+          updateScore();
+        }
+      }
+    }
+
+    function draw() {
+      // 背景
+      const grad = ctx.createLinearGradient(0, 0, 0, H);
+      grad.addColorStop(0, getComputedStyle(document.documentElement).getPropertyValue("--bg-1").trim());
+      grad.addColorStop(1, getComputedStyle(document.documentElement).getPropertyValue("--surface").trim());
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, W, H);
+
+      // 地面
+      ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--border").trim();
+      ctx.fillRect(0, GROUND_Y, W, 2);
+
+      // 玩家
+      const playerGrad = ctx.createLinearGradient(player.x, player.y, player.x + player.w, player.y + player.h);
+      playerGrad.addColorStop(0, "#8b5cf6");
+      playerGrad.addColorStop(1, "#ec4899");
+      ctx.fillStyle = playerGrad;
+      ctx.shadowColor = "rgba(139, 92, 246, 0.5)";
+      ctx.shadowBlur = 10;
+      roundRect(ctx, player.x, player.y, player.w, player.h, 6);
+      ctx.fill();
+      ctx.shadowColor = "transparent";
+      ctx.shadowBlur = 0;
+
+      // 障碍物
+      ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--accent-3").trim();
+      obstacles.forEach(obs => {
+        roundRect(ctx, obs.x, obs.y, obs.w, obs.h, 4);
+        ctx.fill();
+      });
+
+      // 游戏开始提示
+      if (!playing && !gameOver) {
+        ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--text-dim").trim();
+        ctx.font = "600 16px system-ui";
+        ctx.textAlign = "center";
+        ctx.fillText("点击或按空格开始", W / 2, H / 2);
+      }
+    }
+
+    function roundRect(ctx, x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
+
+    function loop() {
+      update();
+      draw();
+      if (playing && !gameOver) requestAnimationFrame(loop);
+    }
+
+    function endGame() {
+      playing = false;
+      gameOver = true;
+      navigator.vibrate?.([30, 30, 60]);
+
+      const ov = SG.overlay({
+        title: "游戏结束",
+        body: `你跳过了 ${score} 个障碍物${score === best ? '<br>🏆 新纪录！' : ''}`,
+        score: score,
+        buttons: [
+          { text: "再来一次", kind: "primary", onClick: () => { ov.hide(); start(); } },
+          { text: "返回", kind: "", onClick: () => ov.hide() }
+        ],
+      });
+      ov.show();
+    }
+
+    // 事件
+    document.getElementById("jumpBtn").addEventListener("click", jump);
+    document.addEventListener("keydown", e => {
+      if (e.code === "Space") {
+        e.preventDefault();
+        jump();
+      }
+    });
+    cv.addEventListener("click", jump);
+
+    document.getElementById("help").addEventListener("click", () => {
+      const ov = SG.overlay({
+        title: "怎么玩跳跃方块",
+        body: "点击屏幕或按空格键让方块跳跃，躲避迎面而来的障碍物。<br>每躲过一个障碍物得 1 分，撞到障碍物游戏结束。<br>随着时间推移，游戏速度会越来越快！",
+        buttons: [{ text: "开始游戏", kind: "primary", onClick: () => { ov.hide(); start(); } }],
+      });
+      ov.show();
+    });
+
+    document.getElementById("themeBtn").addEventListener("click", () => {
+      SG.toggleTheme();
+      if (!playing || gameOver) draw();
+    });
+
+    window.addEventListener("resize", () => {
+      resize();
+      if (!playing || gameOver) draw();
+    });
+
+    resize();
+    draw();
+  })();
+  </script>
+</body>
+</html>

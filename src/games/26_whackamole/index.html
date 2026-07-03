@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="description" content="打地鼠 — 反应速度挑战，快速点击冒出的地鼠得分">
+  <title>打地鼠 · Slowpapa</title>
+  <link rel="stylesheet" href="/assets/game.css">
+  <style>
+    .game-board { width: min(94vw, 460px); aspect-ratio: 1 / 1; padding: 20px; }
+    .holes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; height: 100%; }
+    .hole { position: relative; background: var(--surface); border: 2px solid var(--border); border-radius: 50% 50% 0 0; overflow: hidden; cursor: pointer; }
+    .hole::before { content: ""; position: absolute; bottom: 0; left: 50%; transform: translateX(-50%); width: 80%; height: 40%; background: #2d1810; border-radius: 50%; }
+    .mole { position: absolute; bottom: -100%; left: 50%; transform: translateX(-50%); width: 70%; height: 80%; background: linear-gradient(135deg, #8b4513 0%, #654321 100%); border-radius: 50% 50% 40% 40%; transition: bottom 0.15s cubic-bezier(0.25, 0.46, 0.45, 0.94); display: flex; align-items: center; justify-content: center; font-size: 2em; }
+    .mole.show { bottom: 10%; }
+    .mole.hit { animation: hit 0.3s ease; }
+    @keyframes hit { 0%, 100% { transform: translateX(-50%) scale(1); } 50% { transform: translateX(-50%) scale(0.8); opacity: 0.5; } }
+    .mole::before { content: ""; position: absolute; top: 20%; width: 90%; height: 50%; background: linear-gradient(135deg, #a0522d 0%, #8b4513 100%); border-radius: 50%; }
+    .eyes { position: absolute; top: 30%; width: 100%; display: flex; justify-content: space-around; padding: 0 25%; z-index: 1; }
+    .eye { width: 8px; height: 8px; background: #000; border-radius: 50%; }
+    .nose { position: absolute; top: 50%; left: 50%; transform: translateX(-50%); width: 12px; height: 10px; background: #000; border-radius: 50%; z-index: 1; }
+    .score-popup { position: absolute; top: 20%; left: 50%; transform: translateX(-50%); font-size: 24px; font-weight: 900; color: var(--accent-2); opacity: 0; pointer-events: none; animation: scoreUp 0.8s ease; }
+    @keyframes scoreUp { 0% { opacity: 1; transform: translateX(-50%) translateY(0); } 100% { opacity: 0; transform: translateX(-50%) translateY(-40px); } }
+    .timer-bar { width: 100%; height: 6px; background: var(--surface); border-radius: 999px; overflow: hidden; margin: 12px 0; }
+    .timer-fill { height: 100%; background: var(--grad); transition: width 0.1s linear; border-radius: 999px; }
+    .difficulty { margin: 12px 0; }
+  </style>
+</head>
+<body>
+  <div class="game-shell">
+    <div class="game-topbar">
+      <a class="back" href="/" aria-label="返回">‹</a>
+      <div class="title">打地鼠<small>考验你的反应速度</small></div>
+      <div class="stats">
+        <div class="stat"><span class="k">最高</span><span class="v accent" id="bestV">0</span></div>
+        <div class="stat"><span class="k">得分</span><span class="v" id="scoreV">0</span></div>
+      </div>
+      <button class="icon-btn" id="themeBtn" aria-label="切换主题">◐</button>
+      <button class="icon-btn" id="help" aria-label="规则">?</button>
+    </div>
+
+    <div class="game-stage">
+      <div style="display:flex;flex-direction:column;align-items:center;width:100%;">
+        <div style="width: min(94vw, 460px);">
+          <div class="difficulty">
+            <div class="segment" id="diffSeg">
+              <button data-diff="easy">简单</button>
+              <button data-diff="normal" aria-pressed="true">普通</button>
+              <button data-diff="hard">困难</button>
+            </div>
+          </div>
+          <div class="timer-bar"><div class="timer-fill" id="timerFill"></div></div>
+        </div>
+        <div class="game-board">
+          <div class="holes" id="holes">
+            <div class="hole" data-idx="0"><div class="mole"><div class="eyes"><div class="eye"></div><div class="eye"></div></div><div class="nose"></div></div></div>
+            <div class="hole" data-idx="1"><div class="mole"><div class="eyes"><div class="eye"></div><div class="eye"></div></div><div class="nose"></div></div></div>
+            <div class="hole" data-idx="2"><div class="mole"><div class="eyes"><div class="eye"></div><div class="eye"></div></div><div class="nose"></div></div></div>
+            <div class="hole" data-idx="3"><div class="mole"><div class="eyes"><div class="eye"></div><div class="eye"></div></div><div class="nose"></div></div></div>
+            <div class="hole" data-idx="4"><div class="mole"><div class="eyes"><div class="eye"></div><div class="eye"></div></div><div class="nose"></div></div></div>
+            <div class="hole" data-idx="5"><div class="mole"><div class="eyes"><div class="eye"></div><div class="eye"></div></div><div class="nose"></div></div></div>
+            <div class="hole" data-idx="6"><div class="mole"><div class="eyes"><div class="eye"></div><div class="eye"></div></div><div class="nose"></div></div></div>
+            <div class="hole" data-idx="7"><div class="mole"><div class="eyes"><div class="eye"></div><div class="eye"></div></div><div class="nose"></div></div></div>
+            <div class="hole" data-idx="8"><div class="mole"><div class="eyes"><div class="eye"></div><div class="eye"></div></div><div class="nose"></div></div></div>
+          </div>
+        </div>
+        <div class="action-row">
+          <button class="btn primary" id="startBtn">开始游戏</button>
+        </div>
+        <p class="hint">点击冒出的地鼠得分，时间结束游戏结束</p>
+      </div>
+    </div>
+  </div>
+
+  <script src="/assets/game.js"></script>
+  <script>
+  (function () {
+    "use strict";
+    const KEY = "whackamole";
+    const GAME_TIME = 30000; // 30秒
+    const DIFF_CONFIG = {
+      easy: { showMin: 800, showMax: 1200, hideMin: 1200, hideMax: 1800 },
+      normal: { showMin: 600, showMax: 1000, hideMin: 900, hideMax: 1400 },
+      hard: { showMin: 400, showMax: 700, hideMin: 600, hideMax: 1000 },
+    };
+
+    const holes = Array.from(document.querySelectorAll(".hole"));
+    const moles = holes.map(h => h.querySelector(".mole"));
+    const scoreEl = document.getElementById("scoreV");
+    const bestEl = document.getElementById("bestV");
+    const timerFill = document.getElementById("timerFill");
+    const startBtn = document.getElementById("startBtn");
+
+    let score = 0;
+    let best = SG.best(KEY);
+    let playing = false;
+    let startTime = 0;
+    let difficulty = "normal";
+    let spawnTimer = null;
+    let gameTimer = null;
+    let activeMoles = new Set();
+
+    bestEl.textContent = best;
+
+    // 难度切换
+    document.getElementById("diffSeg").addEventListener("click", e => {
+      if (playing) return;
+      const btn = e.target.closest("button");
+      if (!btn) return;
+      difficulty = btn.dataset.diff;
+      document.querySelectorAll("#diffSeg button").forEach(b =>
+        b.setAttribute("aria-pressed", b === btn ? "true" : "false")
+      );
+    });
+
+    // 开始游戏
+    startBtn.addEventListener("click", startGame);
+
+    function startGame() {
+      if (playing) return;
+      playing = true;
+      score = 0;
+      activeMoles.clear();
+      startTime = Date.now();
+      updateScore();
+      startBtn.disabled = true;
+      startBtn.textContent = "游戏中...";
+
+      // 隐藏所有地鼠
+      moles.forEach(m => m.classList.remove("show"));
+
+      // 开始生成地鼠
+      spawnMole();
+
+      // 游戏计时器
+      gameTimer = setInterval(updateTimer, 100);
+
+      // 游戏结束
+      setTimeout(endGame, GAME_TIME);
+    }
+
+    function spawnMole() {
+      if (!playing) return;
+
+      const cfg = DIFF_CONFIG[difficulty];
+      const availableHoles = holes.filter((_, i) => !activeMoles.has(i));
+
+      if (availableHoles.length === 0) {
+        spawnTimer = setTimeout(spawnMole, 300);
+        return;
+      }
+
+      const hole = availableHoles[Math.floor(Math.random() * availableHoles.length)];
+      const idx = parseInt(hole.dataset.idx);
+      const mole = moles[idx];
+
+      activeMoles.add(idx);
+      mole.classList.add("show");
+
+      // 随机显示时间
+      const hideTime = cfg.hideMin + Math.random() * (cfg.hideMax - cfg.hideMin);
+      setTimeout(() => {
+        mole.classList.remove("show");
+        activeMoles.delete(idx);
+      }, hideTime);
+
+      // 下次生成时间
+      const nextTime = cfg.showMin + Math.random() * (cfg.showMax - cfg.showMin);
+      spawnTimer = setTimeout(spawnMole, nextTime);
+    }
+
+    function updateTimer() {
+      const elapsed = Date.now() - startTime;
+      const remaining = Math.max(0, GAME_TIME - elapsed);
+      const percent = (remaining / GAME_TIME) * 100;
+      timerFill.style.width = percent + "%";
+    }
+
+    function endGame() {
+      playing = false;
+      clearTimeout(spawnTimer);
+      clearInterval(gameTimer);
+      startBtn.disabled = false;
+      startBtn.textContent = "再玩一次";
+
+      // 隐藏所有地鼠
+      moles.forEach(m => m.classList.remove("show"));
+      activeMoles.clear();
+
+      // 更新最高分
+      if (score > best) {
+        best = score;
+        SG.best(KEY, best);
+        bestEl.textContent = best;
+      }
+
+      // 显示结果
+      const ov = SG.overlay({
+        title: score > best * 0.8 ? "太棒了！" : "游戏结束",
+        body: `你在 ${difficulty === 'easy' ? '简单' : difficulty === 'normal' ? '普通' : '困难'}模式下打中了 ${score} 只地鼠`,
+        score: score,
+        buttons: [
+          { text: "再来一局", kind: "primary", onClick: () => { ov.hide(); startGame(); } },
+          { text: "返回", kind: "", onClick: () => ov.hide() }
+        ],
+      });
+      ov.show();
+      navigator.vibrate?.([30, 30, 60]);
+    }
+
+    function updateScore() {
+      scoreEl.textContent = score;
+    }
+
+    // 点击地鼠
+    holes.forEach((hole, idx) => {
+      hole.addEventListener("click", () => {
+        if (!playing) return;
+        const mole = moles[idx];
+        if (!mole.classList.contains("show")) return;
+
+        // 击中
+        score++;
+        updateScore();
+        mole.classList.add("hit");
+        mole.classList.remove("show");
+        activeMoles.delete(idx);
+
+        // 显示得分动画
+        const popup = document.createElement("div");
+        popup.className = "score-popup";
+        popup.textContent = "+1";
+        hole.appendChild(popup);
+        setTimeout(() => popup.remove(), 800);
+
+        setTimeout(() => mole.classList.remove("hit"), 300);
+        navigator.vibrate?.(10);
+      });
+    });
+
+    // 规则说明
+    document.getElementById("help").addEventListener("click", () => {
+      const ov = SG.overlay({
+        title: "怎么玩打地鼠",
+        body: "地鼠会随机从洞中冒出，快速点击它们得分。30秒内尽可能多打中地鼠。<br><br><b>简单</b>：地鼠出现慢<br><b>普通</b>：正常速度<br><b>困难</b>：地鼠出现快且停留时间短",
+        buttons: [{ text: "开始游戏", kind: "primary", onClick: () => ov.hide() }],
+      });
+      ov.show();
+    });
+
+    document.getElementById("themeBtn").addEventListener("click", SG.toggleTheme);
+  })();
+  </script>
+</body>
+</html>
