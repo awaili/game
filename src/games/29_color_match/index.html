@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="description" content="颜色匹配 — 快速识别颜色，挑战反应极限">
+  <title>颜色匹配 · Slowpapa</title>
+  <link rel="stylesheet" href="/assets/game.css">
+  <style>
+    .game-board { width: min(94vw, 460px); padding: 24px; }
+    .color-display { width: 100%; aspect-ratio: 1.5 / 1; border-radius: var(--radius); display: flex; align-items: center; justify-content: center; font-size: 48px; font-weight: 900; margin-bottom: 20px; transition: background 0.3s ease; }
+    .options { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-top: 20px; }
+    .option-btn { height: 80px; border-radius: var(--radius-sm); border: 2px solid var(--border); background: var(--surface-2); color: var(--text); font-size: 18px; font-weight: 700; cursor: pointer; transition: transform 0.15s ease, background 0.2s ease; }
+    .option-btn:hover { background: var(--surface); transform: scale(1.02); }
+    .option-btn:active { transform: scale(0.98); }
+    .option-btn.correct { background: var(--good); color: white; border-color: var(--good); }
+    .option-btn.wrong { background: var(--bad); color: white; border-color: var(--bad); animation: shake 0.3s; }
+    @keyframes shake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-10px); } 75% { transform: translateX(10px); } }
+    .timer-bar { width: 100%; height: 8px; background: var(--surface); border-radius: 999px; overflow: hidden; margin-bottom: 16px; }
+    .timer-fill { height: 100%; background: var(--grad); transition: width 0.05s linear; }
+    .mode-selector { margin-bottom: 16px; }
+  </style>
+</head>
+<body>
+  <div class="game-shell">
+    <div class="game-topbar">
+      <a class="back" href="/" aria-label="返回">‹</a>
+      <div class="title">颜色匹配<small>快速识别正确颜色</small></div>
+      <div class="stats">
+        <div class="stat"><span class="k">最高</span><span class="v accent" id="bestV">0</span></div>
+        <div class="stat"><span class="k">得分</span><span class="v" id="scoreV">0</span></div>
+      </div>
+      <button class="icon-btn" id="themeBtn" aria-label="切换主题">◐</button>
+      <button class="icon-btn" id="help" aria-label="规则">?</button>
+    </div>
+
+    <div class="game-stage">
+      <div style="display:flex;flex-direction:column;align-items:center;width:100%;">
+        <div style="width: min(94vw, 460px);">
+          <div class="mode-selector">
+            <div class="segment" id="modeSeg">
+              <button data-mode="color" aria-pressed="true">颜色模式</button>
+              <button data-mode="text">文字模式</button>
+            </div>
+          </div>
+          <div class="timer-bar"><div class="timer-fill" id="timerFill"></div></div>
+        </div>
+        <div class="game-board">
+          <div class="color-display" id="colorDisplay">开始</div>
+          <div class="options" id="options"></div>
+        </div>
+        <div class="action-row">
+          <button class="btn primary" id="startBtn">开始游戏</button>
+        </div>
+        <p class="hint">选择与顶部颜色/文字匹配的选项</p>
+      </div>
+    </div>
+  </div>
+
+  <script src="/assets/game.js"></script>
+  <script>
+  (function () {
+    "use strict";
+    const KEY = "colormatch";
+
+    const COLORS = [
+      { name: "红色", hex: "#ef4444" },
+      { name: "蓝色", hex: "#3b82f6" },
+      { name: "绿色", hex: "#22c55e" },
+      { name: "黄色", hex: "#eab308" },
+      { name: "紫色", hex: "#a855f7" },
+      { name: "橙色", hex: "#f97316" },
+      { name: "粉色", hex: "#ec4899" },
+      { name: "青色", hex: "#06b6d4" },
+    ];
+
+    const colorDisplay = document.getElementById("colorDisplay");
+    const optionsEl = document.getElementById("options");
+    const scoreEl = document.getElementById("scoreV");
+    const bestEl = document.getElementById("bestV");
+    const timerFill = document.getElementById("timerFill");
+    const startBtn = document.getElementById("startBtn");
+
+    let score = 0;
+    let best = SG.best(KEY);
+    let playing = false;
+    let mode = "color"; // color 或 text
+    let currentQuestion = null;
+    let startTime = 0;
+    let timeLimit = 60000; // 60秒
+    let gameTimer = null;
+
+    bestEl.textContent = best;
+
+    // 模式切换
+    document.getElementById("modeSeg").addEventListener("click", e => {
+      if (playing) return;
+      const btn = e.target.closest("button");
+      if (!btn) return;
+      mode = btn.dataset.mode;
+      document.querySelectorAll("#modeSeg button").forEach(b =>
+        b.setAttribute("aria-pressed", b === btn ? "true" : "false")
+      );
+    });
+
+    startBtn.addEventListener("click", startGame);
+
+    function startGame() {
+      if (playing) return;
+      playing = true;
+      score = 0;
+      startTime = Date.now();
+      updateScore();
+      startBtn.disabled = true;
+      startBtn.textContent = "游戏中...";
+
+      gameTimer = setInterval(updateTimer, 50);
+      setTimeout(endGame, timeLimit);
+
+      nextQuestion();
+    }
+
+    function nextQuestion() {
+      if (!playing) return;
+
+      // 生成问题
+      const targetColor = COLORS[Math.floor(Math.random() * COLORS.length)];
+
+      if (mode === "color") {
+        // 颜色模式：显示颜色块，选项是文字
+        colorDisplay.style.background = targetColor.hex;
+        colorDisplay.textContent = "";
+        currentQuestion = { type: "color", answer: targetColor.name };
+
+        // 生成4个选项（包含正确答案）
+        const options = [targetColor.name];
+        while (options.length < 4) {
+          const opt = COLORS[Math.floor(Math.random() * COLORS.length)].name;
+          if (!options.includes(opt)) options.push(opt);
+        }
+        shuffle(options);
+
+        renderOptions(options);
+      } else {
+        // 文字模式：显示文字，但文字颜色可能不匹配
+        const textColor = COLORS[Math.floor(Math.random() * COLORS.length)];
+        colorDisplay.style.background = "var(--surface-2)";
+        colorDisplay.style.color = textColor.hex;
+        colorDisplay.textContent = targetColor.name;
+
+        // 答案是文字的颜色（不是文字本身）
+        currentQuestion = { type: "text", answer: textColor.name };
+
+        const options = [textColor.name];
+        while (options.length < 4) {
+          const opt = COLORS[Math.floor(Math.random() * COLORS.length)].name;
+          if (!options.includes(opt)) options.push(opt);
+        }
+        shuffle(options);
+
+        renderOptions(options);
+      }
+    }
+
+    function shuffle(arr) {
+      for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [arr[i], arr[j]] = [arr[j], arr[i]];
+      }
+    }
+
+    function renderOptions(options) {
+      optionsEl.innerHTML = options.map(opt =>
+        `<button class="option-btn" data-answer="${opt}">${opt}</button>`
+      ).join("");
+
+      optionsEl.querySelectorAll(".option-btn").forEach(btn => {
+        btn.addEventListener("click", () => handleAnswer(btn.dataset.answer, btn));
+      });
+    }
+
+    function handleAnswer(answer, btn) {
+      if (!playing) return;
+
+      const correct = answer === currentQuestion.answer;
+
+      if (correct) {
+        score++;
+        updateScore();
+        btn.classList.add("correct");
+        navigator.vibrate?.(10);
+        setTimeout(nextQuestion, 300);
+      } else {
+        btn.classList.add("wrong");
+        navigator.vibrate?.([30, 30]);
+        setTimeout(() => btn.classList.remove("wrong"), 300);
+      }
+    }
+
+    function updateTimer() {
+      const elapsed = Date.now() - startTime;
+      const remaining = Math.max(0, timeLimit - elapsed);
+      const percent = (remaining / timeLimit) * 100;
+      timerFill.style.width = percent + "%";
+    }
+
+    function endGame() {
+      playing = false;
+      clearInterval(gameTimer);
+      startBtn.disabled = false;
+      startBtn.textContent = "再玩一次";
+
+      colorDisplay.style.background = "var(--surface-2)";
+      colorDisplay.style.color = "var(--text)";
+      colorDisplay.textContent = "游戏结束";
+      optionsEl.innerHTML = "";
+
+      if (score > best) {
+        best = score;
+        SG.best(KEY, best);
+        bestEl.textContent = best;
+      }
+
+      const ov = SG.overlay({
+        title: score >= 20 ? "反应神速！" : "游戏结束",
+        body: `你在 ${mode === 'color' ? '颜色' : '文字'}模式下答对了 ${score} 题`,
+        score: score,
+        buttons: [
+          { text: "再来一局", kind: "primary", onClick: () => { ov.hide(); startGame(); } },
+          { text: "返回", kind: "", onClick: () => ov.hide() }
+        ],
+      });
+      ov.show();
+      navigator.vibrate?.([30, 30, 60]);
+    }
+
+    function updateScore() {
+      scoreEl.textContent = score;
+    }
+
+    document.getElementById("help").addEventListener("click", () => {
+      const ov = SG.overlay({
+        title: "怎么玩颜色匹配",
+        body:
+          "<b>颜色模式</b>：看到颜色块，选择对应的颜色名称<br><br>" +
+          "<b>文字模式</b>：看到彩色文字，选择<b>文字颜色</b>（不是文字内容）<br><br>" +
+          "60秒内尽可能多答对，错误不扣分但浪费时间！",
+        buttons: [{ text: "开始游戏", kind: "primary", onClick: () => ov.hide() }],
+      });
+      ov.show();
+    });
+
+    document.getElementById("themeBtn").addEventListener("click", SG.toggleTheme);
+  })();
+  </script>
+</body>
+</html>

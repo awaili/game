@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="description" content="泡泡龙 — 发射泡泡消除相同颜色，经典射击游戏">
+  <title>泡泡龙 · Slowpapa</title>
+  <link rel="stylesheet" href="/assets/game.css">
+  <style>
+    .game-board { width: min(94vw, 420px); height: 560px; padding: 0; position: relative; overflow: hidden; }
+    #canvas { display: block; width: 100%; height: 100%; border-radius: var(--radius); }
+    .aim-line { position: absolute; bottom: 80px; left: 50%; width: 2px; height: 100px; background: rgba(255,255,255,0.3); transform-origin: bottom center; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <div class="game-shell">
+    <div class="game-topbar">
+      <a class="back" href="/" aria-label="返回">‹</a>
+      <div class="title">泡泡龙<small>射击消除同色泡泡</small></div>
+      <div class="stats">
+        <div class="stat"><span class="k">最高</span><span class="v accent" id="bestV">0</span></div>
+        <div class="stat"><span class="k">得分</span><span class="v" id="scoreV">0</span></div>
+      </div>
+      <button class="icon-btn" id="themeBtn" aria-label="切换主题">◐</button>
+      <button class="icon-btn" id="help" aria-label="规则">?</button>
+    </div>
+
+    <div class="game-stage">
+      <div style="display:flex;flex-direction:column;align-items:center;width:100%;">
+        <div class="game-board">
+          <canvas id="canvas"></canvas>
+        </div>
+        <div class="action-row">
+          <button class="btn primary" id="startBtn">开始游戏</button>
+        </div>
+        <p class="hint">点击屏幕或拖动瞄准，射击消除3个及以上同色泡泡</p>
+      </div>
+    </div>
+  </div>
+
+  <script src="/assets/game.js"></script>
+  <script>
+  (function () {
+    "use strict";
+    const KEY = "bubble";
+    const cv = document.getElementById("canvas");
+    const ctx = cv.getContext("2d");
+    const scoreEl = document.getElementById("scoreV");
+    const bestEl = document.getElementById("bestV");
+
+    let DPR = 1, W = 0, H = 0;
+    let bubbleR = 18;
+    let cols = 10, rows = 8;
+    let score = 0, best = SG.best(KEY);
+    let playing = false, gameOver = false;
+
+    const COLORS = ["#ef4444", "#3b82f6", "#22c55e", "#eab308", "#a855f7"];
+    let grid = []; // {x, y, color, row, col}
+    let shooter = { x: 0, y: 0, color: null, vx: 0, vy: 0, active: false };
+    let nextColor = null;
+    let aimAngle = -Math.PI / 2;
+
+    bestEl.textContent = best;
+
+    function resize() {
+      DPR = Math.max(1, window.devicePixelRatio || 1);
+      const rect = cv.getBoundingClientRect();
+      W = rect.width;
+      H = rect.height;
+      cv.width = Math.round(W * DPR);
+      cv.height = Math.round(H * DPR);
+      ctx.scale(DPR, DPR);
+      bubbleR = Math.min(W / cols, 30) / 2;
+    }
+
+    function initGrid() {
+      grid = [];
+      score = 0;
+      playing = true;
+      gameOver = false;
+      updateScore();
+
+      // 生成初始泡泡（前5行）
+      for (let r = 0; r < 5; r++) {
+        for (let c = 0; c < cols; c++) {
+          const offset = r % 2 === 1 ? bubbleR : 0;
+          grid.push({
+            x: c * bubbleR * 2 + bubbleR + offset,
+            y: r * bubbleR * 2 + bubbleR,
+            color: COLORS[Math.floor(Math.random() * COLORS.length)],
+            row: r,
+            col: c,
+          });
+        }
+      }
+
+      shooter.x = W / 2;
+      shooter.y = H - 40;
+      shooter.color = COLORS[Math.floor(Math.random() * COLORS.length)];
+      nextColor = COLORS[Math.floor(Math.random() * COLORS.length)];
+      shooter.active = false;
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, W, H);
+
+      // 背景
+      const grad = ctx.createLinearGradient(0, 0, 0, H);
+      grad.addColorStop(0, getComputedStyle(document.documentElement).getPropertyValue("--bg-1").trim());
+      grad.addColorStop(1, getComputedStyle(document.documentElement).getPropertyValue("--surface").trim());
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, W, H);
+
+      // 网格泡泡
+      grid.forEach(b => drawBubble(b.x, b.y, bubbleR, b.color));
+
+      // 射击器
+      if (!shooter.active) {
+        drawBubble(shooter.x, shooter.y, bubbleR, shooter.color);
+
+        // 瞄准线
+        ctx.strokeStyle = "rgba(255,255,255,0.3)";
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 5]);
+        ctx.beginPath();
+        ctx.moveTo(shooter.x, shooter.y);
+        ctx.lineTo(shooter.x + Math.cos(aimAngle) * 100, shooter.y + Math.sin(aimAngle) * 100);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // 下一个颜色
+        ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--text-mute").trim();
+        ctx.font = "12px system-ui";
+        ctx.textAlign = "center";
+        ctx.fillText("下一个", W / 2, H - 65);
+        drawBubble(W / 2, H - 80, bubbleR * 0.7, nextColor);
+      } else {
+        drawBubble(shooter.x, shooter.y, bubbleR, shooter.color);
+      }
+
+      // 游戏结束提示
+      if (gameOver) {
+        ctx.fillStyle = "rgba(0,0,0,0.7)";
+        ctx.fillRect(0, 0, W, H);
+        ctx.fillStyle = "#fff";
+        ctx.font = "24px system-ui";
+        ctx.textAlign = "center";
+        ctx.fillText("游戏结束", W / 2, H / 2);
+      }
+    }
+
+    function drawBubble(x, y, r, color) {
+      ctx.fillStyle = color;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 8;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowColor = "transparent";
+      ctx.shadowBlur = 0;
+
+      // 高光
+      const grd = ctx.createRadialGradient(x - r/3, y - r/3, 0, x, y, r);
+      grd.addColorStop(0, "rgba(255,255,255,0.4)");
+      grd.addColorStop(1, "rgba(255,255,255,0)");
+      ctx.fillStyle = grd;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    function update() {
+      if (!playing || gameOver || !shooter.active) return;
+
+      shooter.x += shooter.vx;
+      shooter.y += shooter.vy;
+
+      // 墙壁反弹
+      if (shooter.x - bubbleR < 0 || shooter.x + bubbleR > W) {
+        shooter.vx = -shooter.vx;
+        shooter.x = Math.max(bubbleR, Math.min(W - bubbleR, shooter.x));
+      }
+
+      // 碰撞检测
+      for (let b of grid) {
+        const dist = Math.hypot(shooter.x - b.x, shooter.y - b.y);
+        if (dist < bubbleR * 2) {
+          attachBubble();
+          return;
+        }
+      }
+
+      // 到达顶部
+      if (shooter.y - bubbleR < 0) {
+        attachBubble();
+      }
+    }
+
+    function attachBubble() {
+      // 找到最近的网格位置
+      let minDist = Infinity;
+      let targetRow = 0, targetCol = 0;
+
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const offset = r % 2 === 1 ? bubbleR : 0;
+          const x = c * bubbleR * 2 + bubbleR + offset;
+          const y = r * bubbleR * 2 + bubbleR;
+          const dist = Math.hypot(shooter.x - x, shooter.y - y);
+          if (dist < minDist) {
+            minDist = dist;
+            targetRow = r;
+            targetCol = c;
+          }
+        }
+      }
+
+      const offset = targetRow % 2 === 1 ? bubbleR : 0;
+      const x = targetCol * bubbleR * 2 + bubbleR + offset;
+      const y = targetRow * bubbleR * 2 + bubbleR;
+
+      // 检查位置是否已占用
+      const occupied = grid.some(b => b.row === targetRow && b.col === targetCol);
+      if (!occupied) {
+        grid.push({ x, y, color: shooter.color, row: targetRow, col: targetCol });
+        checkMatches(targetRow, targetCol);
+      }
+
+      // 重置射击器
+      shooter.x = W / 2;
+      shooter.y = H - 40;
+      shooter.color = nextColor;
+      nextColor = COLORS[Math.floor(Math.random() * COLORS.length)];
+      shooter.active = false;
+      shooter.vx = 0;
+      shooter.vy = 0;
+
+      // 检查游戏结束
+      if (grid.some(b => b.y + bubbleR > H - 100)) {
+        endGame();
+      }
+    }
+
+    function checkMatches(row, col) {
+      const color = grid.find(b => b.row === row && b.col === col)?.color;
+      if (!color) return;
+
+      const visited = new Set();
+      const queue = [[row, col]];
+      const matches = [];
+
+      while (queue.length > 0) {
+        const [r, c] = queue.shift();
+        const key = `${r},${c}`;
+        if (visited.has(key)) continue;
+        visited.add(key);
+
+        const bubble = grid.find(b => b.row === r && b.col === c);
+        if (bubble && bubble.color === color) {
+          matches.push(bubble);
+
+          // 检查相邻泡泡（六边形）
+          const neighbors = getNeighbors(r, c);
+          neighbors.forEach(([nr, nc]) => {
+            if (!visited.has(`${nr},${nc}`)) queue.push([nr, nc]);
+          });
+        }
+      }
+
+      if (matches.length >= 3) {
+        matches.forEach(m => {
+          const idx = grid.indexOf(m);
+          if (idx > -1) grid.splice(idx, 1);
+        });
+        score += matches.length * 10;
+        updateScore();
+        navigator.vibrate?.(15);
+      }
+    }
+
+    function getNeighbors(row, col) {
+      const isOdd = row % 2 === 1;
+      return [
+        [row - 1, col + (isOdd ? 1 : 0)],
+        [row - 1, col + (isOdd ? 0 : -1)],
+        [row, col - 1],
+        [row, col + 1],
+        [row + 1, col + (isOdd ? 1 : 0)],
+        [row + 1, col + (isOdd ? 0 : -1)],
+      ].filter(([r, c]) => r >= 0 && r < rows && c >= 0 && c < cols);
+    }
+
+    function shoot(angle) {
+      if (shooter.active || !playing || gameOver) return;
+      shooter.active = true;
+      const speed = 8;
+      shooter.vx = Math.cos(angle) * speed;
+      shooter.vy = Math.sin(angle) * speed;
+    }
+
+    function loop() {
+      update();
+      draw();
+      if (playing && !gameOver) requestAnimationFrame(loop);
+    }
+
+    function endGame() {
+      playing = false;
+      gameOver = true;
+
+      if (score > best) {
+        best = score;
+        SG.best(KEY, best);
+        bestEl.textContent = best;
+      }
+
+      setTimeout(() => {
+        const ov = SG.overlay({
+          title: "游戏结束",
+          body: `泡泡到底了！你得到了 ${score} 分${score === best ? '<br>🏆 新纪录！' : ''}`,
+          score: score,
+          buttons: [
+            { text: "再来一次", kind: "primary", onClick: () => { ov.hide(); startGame(); } },
+            { text: "返回", kind: "", onClick: () => ov.hide() }
+          ],
+        });
+        ov.show();
+      }, 500);
+    }
+
+    function startGame() {
+      initGrid();
+      loop();
+      document.getElementById("startBtn").disabled = true;
+      document.getElementById("startBtn").textContent = "游戏中...";
+    }
+
+    function updateScore() {
+      scoreEl.textContent = score;
+    }
+
+    // 事件
+    cv.addEventListener("click", e => {
+      if (!playing || gameOver || shooter.active) return;
+      const rect = cv.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const angle = Math.atan2(y - shooter.y, x - shooter.x);
+      if (angle < -Math.PI * 0.1 && angle > -Math.PI * 0.9) {
+        shoot(angle);
+      }
+    });
+
+    cv.addEventListener("pointermove", e => {
+      if (shooter.active || !playing || gameOver) return;
+      const rect = cv.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      aimAngle = Math.atan2(y - shooter.y, x - shooter.x);
+      aimAngle = Math.max(-Math.PI * 0.9, Math.min(-Math.PI * 0.1, aimAngle));
+      draw();
+    });
+
+    document.getElementById("startBtn").addEventListener("click", startGame);
+
+    document.getElementById("help").addEventListener("click", () => {
+      const ov = SG.overlay({
+        title: "怎么玩泡泡龙",
+        body: "点击屏幕发射泡泡。三个或更多相同颜色的泡泡连在一起会消除并得分。<br><br>每消除一个泡泡 +10 分<br>泡泡碰到底部游戏结束",
+        buttons: [{ text: "开始游戏", kind: "primary", onClick: () => { ov.hide(); startGame(); } }],
+      });
+      ov.show();
+    });
+
+    document.getElementById("themeBtn").addEventListener("click", () => {
+      SG.toggleTheme();
+      if (!playing || gameOver) draw();
+    });
+
+    window.addEventListener("resize", () => {
+      resize();
+      if (!playing || gameOver) draw();
+    });
+
+    resize();
+    draw();
+  })();
+  </script>
+</body>
+</html>

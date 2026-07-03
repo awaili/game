@@ -31,6 +31,8 @@
     { id: "whackamole",  path: "games/26_whackamole/index.html",   icon: "🔨", name: "打地鼠",    cat: "reflex", tag: "反应", desc: "快速点击冒出的地鼠得分",         grad: "linear-gradient(135deg,#f59e0b,#dc2626)" },
     { id: "jumper",      path: "games/27_jumper/index.html",       icon: "🟦", name: "跳跃方块",  cat: "reflex", tag: "手速", desc: "一键跳跃躲避障碍，挑战距离",     grad: "linear-gradient(135deg,#3b82f6,#8b5cf6)" },
     { id: "hexagon",     path: "games/28_hexagon/index.html",      icon: "⬡", name: "方块拼图",  cat: "logic",  tag: "策略", desc: "拖拽方块填满棋盘消除得分",       grad: "linear-gradient(135deg,#06b6d4,#8b5cf6)" },
+    { id: "colormatch",  path: "games/29_color_match/index.html",  icon: "🎨", name: "颜色匹配",  cat: "reflex", tag: "反应", desc: "快速识别颜色，挑战反应极限",     grad: "linear-gradient(135deg,#ec4899,#f59e0b)" },
+    { id: "bubble",      path: "games/30_bubble_shooter/index.html",icon: "🫧", name: "泡泡龙",    cat: "vision", tag: "射击", desc: "发射泡泡消除相同颜色得分",       grad: "linear-gradient(135deg,#06b6d4,#3b82f6)" },
   ];
 
   const CATS = [
